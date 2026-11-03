@@ -1,8 +1,10 @@
+import contextlib
 import copy
 import datetime
 import hashlib
 import logging
 import os
+import random
 import tempfile
 import uuid
 from dataclasses import dataclass
@@ -2164,6 +2166,59 @@ def _data_split_seed(exp_info, trial_i):
     return int.from_bytes(hashlib.blake2b(key.encode(), digest_size=4).digest(), "big")
 
 
+@contextlib.contextmanager
+def _bias_type_random_state(exp_info, bias_type, trial_i, stage):
+    """
+    Make a bias type's random draws from the global numpy and `random`
+    generators from a seed of its own, then put both back as they were.
+
+    The unbiased run draws from the global generators, whose state carries
+    from one trial to the next. If a bias type drew from them too -- to bias
+    the dataset or the demonstrations, sample its subdominance groups, or train
+    on it -- every later unbiased run would draw differently, so an experiment
+    config's unbiased results would depend on which bias types it lists. With
+    this, they are those of a config that lists none, as long as both draw the
+    same data split (a dataset bias type can change which one is chosen; see
+    `_draw_data_split()`). Each bias type's own draws are likewise independent
+    of which other bias types are listed. `()` is left on the global
+    generators.
+
+    Like `_data_split_seed()`, the seed leaves the expert out, so that every
+    expert's demonstrations are biased alike.
+
+    Parameters
+    ----------
+    stage : str
+        Which of a bias type's steps is drawing, so that each step gets a seed
+        of its own.
+    """
+    if bias_type == ():
+        yield
+        return
+
+    key = "|".join(
+        [
+            str(exp_info.get("RANDOM_SEED")),
+            str(exp_info.get("EXPERIMENT_NAME")),
+            str(exp_info.get("DATASET")),
+            "bias_type",
+            bias_type_name(bias_type),
+            stage,
+            str(trial_i),
+        ]
+    )
+    # `np.random.seed()` takes 32-bit seeds.
+    seed = int.from_bytes(hashlib.blake2b(key.encode(), digest_size=4).digest(), "big")
+    np_state, py_state = np.random.get_state(), random.getstate()
+    np.random.seed(seed)
+    random.seed(seed)
+    try:
+        yield
+    finally:
+        np.random.set_state(np_state)
+        random.setstate(py_state)
+
+
 def _data_split_stratify_labels(exp_info, X, y):
     """
     The labels `exp_info["DATA_SPLIT_STRATIFY"]` stratifies the split by.
@@ -2377,10 +2432,12 @@ def _split_dataset_and_generate_expert_demos(
     # One biased copy of the dataset per dataset bias type. `()` and the demo
     # bias types leave it untouched.
     logging.info("Applying each dataset bias type to the dataset...")
-    biased_datasets = [
-        _bias_dataset(exp_info, X, y, feature_types, bias_type)
-        for bias_type in bias_type_list
-    ]
+    biased_datasets = []
+    for bias_type in bias_type_list:
+        with _bias_type_random_state(exp_info, bias_type, trial_i, "dataset"):
+            biased_datasets.append(
+                _bias_dataset(exp_info, X, y, feature_types, bias_type)
+            )
 
     # One randomized split, shared by every bias type: the biased datasets
     # differ from each other only by their bias, so splitting them all along
@@ -2410,135 +2467,136 @@ def _split_dataset_and_generate_expert_demos(
     assert bias_type_list[0] == ()
     demos_by_bias_type = []
     for bias_type, (X_biased, y_biased) in zip(bias_type_list, biased_datasets):
-        logging.info(f"Generating expert demonstrations for bias type: {bias_type}")
+        with _bias_type_random_state(exp_info, bias_type, trial_i, "demos"):
+            logging.info(f"Generating expert demonstrations for bias type: {bias_type}")
 
-        X_train = X_biased.iloc[train_idxs]
-        X_val = X_biased.iloc[val_idxs]
-        X_test = X_biased.iloc[test_idxs]
-        y_train = y_biased.iloc[train_idxs]
-        y_val = y_biased.iloc[val_idxs]
-        y_test = y_biased.iloc[test_idxs]
+            X_train = X_biased.iloc[train_idxs]
+            X_val = X_biased.iloc[val_idxs]
+            X_test = X_biased.iloc[test_idxs]
+            y_train = y_biased.iloc[train_idxs]
+            y_val = y_biased.iloc[val_idxs]
+            y_test = y_biased.iloc[test_idxs]
 
-        if bias_type_kind(bias_type) == "demo":
-            # A demo bias type biases the unbiased run's demonstrations
-            # rather than refitting the expert, and reuses its subdominance
-            # groups, so that it differs from the unbiased run by exactly its
-            # bias.
-            unbiased = demos_by_bias_type[0]
-            logging.info("Biasing the unbiased expert demonstrations...")
-            expert_train, expert_val, expert_test = _bias_expert_demonstrations(
-                exp_info,
-                (unbiased.expert_train, unbiased.expert_val, unbiased.expert_test),
-                bias_type,
-                feature_types,
-                feat_obj_set,
-                perf_obj_set,
+            if bias_type_kind(bias_type) == "demo":
+                # A demo bias type biases the unbiased run's demonstrations
+                # rather than refitting the expert, and reuses its subdominance
+                # groups, so that it differs from the unbiased run by exactly its
+                # bias.
+                unbiased = demos_by_bias_type[0]
+                logging.info("Biasing the unbiased expert demonstrations...")
+                expert_train, expert_val, expert_test = _bias_expert_demonstrations(
+                    exp_info,
+                    (unbiased.expert_train, unbiased.expert_val, unbiased.expert_test),
+                    bias_type,
+                    feature_types,
+                    feat_obj_set,
+                    perf_obj_set,
+                )
+                group_idxs_train, group_idxs_val, group_idxs_test = (
+                    unbiased.subdom_groups_train[0],
+                    unbiased.subdom_groups_val[0],
+                    unbiased.subdom_groups_test[0],
+                )
+            else:
+                logging.info(
+                    "Generating expert demonstrations and feature expectations for training set..."
+                )
+                expert_train = _generate_expert_demonstrations(
+                    exp_info,
+                    X_train,
+                    y_train,
+                    expert_algo_lookup,
+                    feat_obj_set,
+                    perf_obj_set,
+                )
+
+                logging.info(
+                    "Generating expert demonstrations and feature expectations for validation set..."
+                )
+                expert_val = _generate_expert_demonstrations(
+                    exp_info,
+                    X_val,
+                    y_val,
+                    expert_algo_lookup,
+                    feat_obj_set,
+                    perf_obj_set,
+                )
+
+                logging.info(
+                    "Generating expert demonstrations and feature expectations for test set..."
+                )
+                expert_test = _generate_expert_demonstrations(
+                    exp_info,
+                    X_test,
+                    y_test,
+                    expert_algo_lookup,
+                    feat_obj_set,
+                    perf_obj_set,
+                )
+                group_idxs_train = group_idxs_val = group_idxs_test = None
+
+            # How evenly the split divides this bias type's dataset, and how close
+            # its experts' feature expectations came out, for every run of this
+            # bias type to report.
+            data_split_imbalance = _data_split_imbalance(
+                [(X_biased, y_biased)], (train_idxs, val_idxs, test_idxs)
             )
-            group_idxs_train, group_idxs_val, group_idxs_test = (
-                unbiased.subdom_groups_train[0],
-                unbiased.subdom_groups_val[0],
-                unbiased.subdom_groups_test[0],
+            muE_split_cosine_dist = _muE_split_cosine_dist(
+                expert_train.mu, expert_val.mu, expert_test.mu
             )
-        else:
             logging.info(
-                "Generating expert demonstrations and feature expectations for training set..."
+                f"Data split group rate imbalance: {data_split_imbalance:.4f};"
+                f" muE cosine distance across splits: {muE_split_cosine_dist:.6f}"
             )
-            expert_train = _generate_expert_demonstrations(
+
+            # Sample the subdominance groups (and compute the expert feature losses
+            # on them) once per split and bias type, so that every
+            # compute_iteration_subdominance() call of that bias type reuses the
+            # same groups. A demo bias type takes the unbiased run's groups.
+            logging.info("Generating subdominance groups for the expert demonstrations...")
+            subdom_groups_train = generate_subdominance_groups(
+                exp_info, expert_train.demo, group_idxs_train
+            )
+            subdom_groups_val = generate_subdominance_groups(
+                exp_info, expert_val.demo, group_idxs_val
+            )
+            subdom_groups_test = generate_subdominance_groups(
+                exp_info, expert_test.demo, group_idxs_test
+            )
+
+            # Score the experts on their own groups, so that every run of this bias
+            # type can report how far its learned policy improved on the expert it
+            # imitated.
+            logging.info("Computing the subdominance of the expert demonstrations...")
+            expert_subdominance = compute_expert_subdominance(
                 exp_info,
-                X_train,
-                y_train,
-                expert_algo_lookup,
-                feat_obj_set,
-                perf_obj_set,
+                (
+                    ("train", expert_train, subdom_groups_train),
+                    ("val", expert_val, subdom_groups_val),
+                    ("test", expert_test, subdom_groups_test),
+                ),
             )
 
-            logging.info(
-                "Generating expert demonstrations and feature expectations for validation set..."
+            demos_by_bias_type.append(
+                BiasedDatasetDemos(
+                    bias_type=bias_type,
+                    X_train=X_train,
+                    X_val=X_val,
+                    X_test=X_test,
+                    y_train=y_train,
+                    y_val=y_val,
+                    y_test=y_test,
+                    expert_train=expert_train,
+                    expert_val=expert_val,
+                    expert_test=expert_test,
+                    subdom_groups_train=subdom_groups_train,
+                    subdom_groups_val=subdom_groups_val,
+                    subdom_groups_test=subdom_groups_test,
+                    expert_subdominance=expert_subdominance,
+                    data_split_imbalance=data_split_imbalance,
+                    muE_split_cosine_dist=muE_split_cosine_dist,
+                )
             )
-            expert_val = _generate_expert_demonstrations(
-                exp_info,
-                X_val,
-                y_val,
-                expert_algo_lookup,
-                feat_obj_set,
-                perf_obj_set,
-            )
-
-            logging.info(
-                "Generating expert demonstrations and feature expectations for test set..."
-            )
-            expert_test = _generate_expert_demonstrations(
-                exp_info,
-                X_test,
-                y_test,
-                expert_algo_lookup,
-                feat_obj_set,
-                perf_obj_set,
-            )
-            group_idxs_train = group_idxs_val = group_idxs_test = None
-
-        # How evenly the split divides this bias type's dataset, and how close
-        # its experts' feature expectations came out, for every run of this
-        # bias type to report.
-        data_split_imbalance = _data_split_imbalance(
-            [(X_biased, y_biased)], (train_idxs, val_idxs, test_idxs)
-        )
-        muE_split_cosine_dist = _muE_split_cosine_dist(
-            expert_train.mu, expert_val.mu, expert_test.mu
-        )
-        logging.info(
-            f"Data split group rate imbalance: {data_split_imbalance:.4f};"
-            f" muE cosine distance across splits: {muE_split_cosine_dist:.6f}"
-        )
-
-        # Sample the subdominance groups (and compute the expert feature losses
-        # on them) once per split and bias type, so that every
-        # compute_iteration_subdominance() call of that bias type reuses the
-        # same groups. A demo bias type takes the unbiased run's groups.
-        logging.info("Generating subdominance groups for the expert demonstrations...")
-        subdom_groups_train = generate_subdominance_groups(
-            exp_info, expert_train.demo, group_idxs_train
-        )
-        subdom_groups_val = generate_subdominance_groups(
-            exp_info, expert_val.demo, group_idxs_val
-        )
-        subdom_groups_test = generate_subdominance_groups(
-            exp_info, expert_test.demo, group_idxs_test
-        )
-
-        # Score the experts on their own groups, so that every run of this bias
-        # type can report how far its learned policy improved on the expert it
-        # imitated.
-        logging.info("Computing the subdominance of the expert demonstrations...")
-        expert_subdominance = compute_expert_subdominance(
-            exp_info,
-            (
-                ("train", expert_train, subdom_groups_train),
-                ("val", expert_val, subdom_groups_val),
-                ("test", expert_test, subdom_groups_test),
-            ),
-        )
-
-        demos_by_bias_type.append(
-            BiasedDatasetDemos(
-                bias_type=bias_type,
-                X_train=X_train,
-                X_val=X_val,
-                X_test=X_test,
-                y_train=y_train,
-                y_val=y_val,
-                y_test=y_test,
-                expert_train=expert_train,
-                expert_val=expert_val,
-                expert_test=expert_test,
-                subdom_groups_train=subdom_groups_train,
-                subdom_groups_val=subdom_groups_val,
-                subdom_groups_test=subdom_groups_test,
-                expert_subdominance=expert_subdominance,
-                data_split_imbalance=data_split_imbalance,
-                muE_split_cosine_dist=muE_split_cosine_dist,
-            )
-        )
 
     return demos_by_bias_type
 
@@ -3912,75 +3970,78 @@ def run_experiment_trial(
     # regardless of its contents), and the Superhuman Fairness baseline, which
     # has no reward weights to adjust, gets a single run.
     for bias_demos in demos_by_bias_type:
-        expert_train = bias_demos.expert_train
-        expert_val = bias_demos.expert_val
-        expert_test = bias_demos.expert_test
+        with _bias_type_random_state(
+            exp_info, bias_demos.bias_type, trial_i, "train"
+        ):
+            expert_train = bias_demos.expert_train
+            expert_val = bias_demos.expert_val
+            expert_test = bias_demos.expert_test
 
-        logging.info(f"BIAS TYPE: {bias_demos.bias_type}")
+            logging.info(f"BIAS TYPE: {bias_demos.bias_type}")
 
-        logging.info(f"muE_train:\n{expert_train.mu}")
-        logging.info(f"muE_val:\n{expert_val.mu}")
-        logging.info(f"muE_test:\n{expert_test.mu}")
-        logging.info(f"muE_perf_train:\n{expert_train.mu_perf}")
-        logging.info(f"muE_perf_val:\n{expert_val.mu_perf}")
-        logging.info(f"muE_perf_test:\n{expert_test.mu_perf}")
+            logging.info(f"muE_train:\n{expert_train.mu}")
+            logging.info(f"muE_val:\n{expert_val.mu}")
+            logging.info(f"muE_test:\n{expert_test.mu}")
+            logging.info(f"muE_perf_train:\n{expert_train.mu_perf}")
+            logging.info(f"muE_perf_val:\n{expert_val.mu_perf}")
+            logging.info(f"muE_perf_test:\n{expert_test.mu_perf}")
 
-        if ALGORITHM_FRWO in algorithms:
-            logging.info(f"ALGORITHM: {ALGORITHM_FRWO}")
-            _run_frwo_trials(
-                exp_info,
-                bias_demos,
-                unbiased_demos,
-                feat_obj_set,
-                perf_obj_set,
-                feature_types,
-                x_cols,
-                weight_adjust_list,
-                unadjusted_weight,
-                can_observe_y,
-                trial_i,
-                group,
-                session_id,
-                trial_start,
-            )
+            if ALGORITHM_FRWO in algorithms:
+                logging.info(f"ALGORITHM: {ALGORITHM_FRWO}")
+                _run_frwo_trials(
+                    exp_info,
+                    bias_demos,
+                    unbiased_demos,
+                    feat_obj_set,
+                    perf_obj_set,
+                    feature_types,
+                    x_cols,
+                    weight_adjust_list,
+                    unadjusted_weight,
+                    can_observe_y,
+                    trial_i,
+                    group,
+                    session_id,
+                    trial_start,
+                )
 
-        for algorithm in algorithms:
-            if algorithm not in SUPERHUMAN_VARIANTS:
-                continue
-            logging.info(f"ALGORITHM: {algorithm}")
-            _run_superhuman_trial(
-                exp_info,
-                bias_demos,
-                unbiased_demos,
-                feat_obj_set,
-                perf_obj_set,
-                feature_types,
-                unadjusted_weight.copy(),
-                trial_i,
-                group,
-                session_id,
-                trial_start,
-                algorithm=algorithm,
-            )
+            for algorithm in algorithms:
+                if algorithm not in SUPERHUMAN_VARIANTS:
+                    continue
+                logging.info(f"ALGORITHM: {algorithm}")
+                _run_superhuman_trial(
+                    exp_info,
+                    bias_demos,
+                    unbiased_demos,
+                    feat_obj_set,
+                    perf_obj_set,
+                    feature_types,
+                    unadjusted_weight.copy(),
+                    trial_i,
+                    group,
+                    session_id,
+                    trial_start,
+                    algorithm=algorithm,
+                )
 
-        for algorithm in algorithms:
-            if algorithm not in BASELINE_SPECS:
-                continue
-            logging.info(f"ALGORITHM: {algorithm}")
-            _run_baseline_trial(
-                exp_info,
-                algorithm,
-                bias_demos,
-                unbiased_demos,
-                feat_obj_set,
-                perf_obj_set,
-                feature_types,
-                unadjusted_weight.copy(),
-                trial_i,
-                group,
-                session_id,
-                trial_start,
-            )
+            for algorithm in algorithms:
+                if algorithm not in BASELINE_SPECS:
+                    continue
+                logging.info(f"ALGORITHM: {algorithm}")
+                _run_baseline_trial(
+                    exp_info,
+                    algorithm,
+                    bias_demos,
+                    unbiased_demos,
+                    feat_obj_set,
+                    perf_obj_set,
+                    feature_types,
+                    unadjusted_weight.copy(),
+                    trial_i,
+                    group,
+                    session_id,
+                    trial_start,
+                )
 
 
 def _run_frwo_trials(

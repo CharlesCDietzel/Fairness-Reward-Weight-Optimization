@@ -1,35 +1,36 @@
-# Experiment configuration for `frwo` (src/frwo/FRWO_Biased_Demonstrations.py).
+# The base experiment config: everything the experiment configs in
+# configs/experiments/ share.
 #
 # Every UPPERCASE key is a config value. Each experiment's `exp_info` -- the
 # dict the experiment code reads, and that every W&B run records as its config
 # -- is built by merging, in order:
-#   1. `common`,
-#   2. the experiment's own keys,
-#   3. any `--set KEY=VALUE` overrides given on the command line (or chosen by
+#   1. `common` below,
+#   2. the dataset's entry under `datasets` below,
+#   3. the dataset's tuned hyperparameters, from
+#      configs/tuned_hyperparameters.yaml,
+#   4. the experiment config's own `common`,
+#   5. the experiment config's own entry for the dataset, under `experiments`,
+#   6. any `--set KEY=VALUE` overrides given on the command line (or chosen by
 #      a W&B sweep, see configs/sweeps/).
-# The top-level RANDOM_SEED, SELECTED_DATASETS and EXPERT_ALGOS can be
-# overridden with `--set` the same way.
+# RANDOM_SEED and EXPERT_ALGOS come from here unless the experiment config sets
+# EXPERT_ALGOS; it always sets SELECTED_DATASETS. All three can be overridden
+# with `--set` the same way.
 #
-# lowercase keys (`common` and `experiments`) only give the file its structure.
+# An experiment config may only change settings this file sets, and never the
+# tuned hyperparameters or the settings that pick the data splits and seeds:
+# RANDOM_SEED, DATA_SPLIT_*, N_DATASET_SAMPLES (see LOCKED_KEYS in
+# src/frwo/config.py). Each experiment's EXPERIMENT_NAME and DATASET are its
+# key under `datasets`.
+#
+# lowercase keys (`common` and `datasets`) only give the file its structure.
 #
 # NOTE: write small floats with a decimal point (`1.0e-5`, not `1e-5`); YAML
 # reads `1e-5` as a string.
 
 RANDOM_SEED: 42
 
-# Which of the `experiments` below to run.
-SELECTED_DATASETS:
-  - COMPAS
-  - Adult
-  - ACSIncome__MA
-  - ACSIncome__MS
-  # - ACSIncome__CA
-  # - ACSIncome__IL
-  # - ACSIncome__AL
-  # - ACSIncome__HI
-
 # The experts whose demonstrations are learned from. Every selected experiment
-# is run once per expert.
+# is run once per expert. An experiment config may set its own.
 EXPERT_ALGOS:
   - OptClfMDPPol
   # A logistic regression post-processed by a fairlearn ThresholdOptimizer,
@@ -48,7 +49,7 @@ EXPERT_ALGOS:
   # - BoundedGroupLoss
   # - COMPAS
 
-# Common config, shared by every experiment.
+# Common config, shared by every experiment of every experiment config.
 common:
   # Every objective available to FEAT_EXP_OBJECTIVE_NAMES and
   # PERF_MEAS_OBJECTIVE_NAMES: Acc, AccPar, DemPar, EqOpp, FPRPar, EqOdds,
@@ -144,10 +145,11 @@ common:
     # - [mul_negative_weights, 0.9]
     # Optimization-based weight debiasing for Fairness Reward Weight
     # Optimization
-    # Which optimizer is best is tuned per dataset in `experiments`. A sweep
-    # tunes it through the OPT_DEBIAS_OPTIMIZER override (e.g.
-    # `--set OPT_DEBIAS_OPTIMIZER=optuna/TPE`), which swaps the library and
-    # optimizer of every `opt_debias` entry here and keeps its budget.
+    # Which optimizer is best is tuned per dataset, as OPT_DEBIAS_OPTIMIZER
+    # (e.g. `--set OPT_DEBIAS_OPTIMIZER=optuna/TPE`): it swaps the library and
+    # optimizer of every `opt_debias` entry here and keeps its budget. The
+    # tuned one, from configs/tuned_hyperparameters.yaml, is swapped in the
+    # same way, into whatever `opt_debias` entries an experiment config has.
     - [opt_debias, optuna, GP, 200]
     # - [opt_debias, optuna, SMAC, 200]
     # - [opt_debias, optuna, TPE, 200]
@@ -388,47 +390,11 @@ common:
   DATA_SPLIT_MAX_TRIES: 50
   DATA_SPLIT_MAX_IMBALANCE: 0.005
 
-# One entry per experiment, keyed by its EXPERIMENT_NAME, in the order they
-# run. Each experiment's DATASET defaults to its name.
-experiments:
+# One entry per dataset, in the order they run, holding its own settings. The
+# tuned hyperparameters are kept apart, in configs/tuned_hyperparameters.yaml.
+datasets:
   COMPAS:
     MIN_FREQ_FILL_PCT: 0.0
-    # Fair LogLoss DP Config Params
-    FAIR_LOGLOSS_DP_C: 0.03252274616873708
-    FAIR_LOGLOSS_DP_RANDOM_INIT: true
-    # Superhuman Fairness Neural Network Config Params
-    SH_NN_BASE_FIT_EPOCHS: 37678
-    SH_NN_HIDDEN_NODES: 256
-    SH_NN_ITERS: 25
-    SH_NN_LAMDA: 0.03876437301911277
-    SH_NN_LR_BOOST_FACTOR: 2.0729952724193645
-    SH_NN_LR_DECAY_GAMMA_FRAC: 0.5485464041257364
-    SH_NN_LR_THETA: 1.8756443084421072e-06
-    # Superhuman Fairness Config Params
-    SH_ITERS: 11
-    SH_LAMDA: 1.2236705262018702e-06
-    SH_LR_THETA: 0.0011627711891745746
-    # Superhuman Fairness Fixed Config Params
-    SH_FIXED_ITERS: 31
-    SH_FIXED_LAMDA: 0.03264095944246435
-    SH_FIXED_LR_THETA: 0.0584638628103295
-    # Fairness Reward Weight Optimization Config Params
-    FRWO_CLF_MAX_DEPTH: 5
-    FRWO_CLF_MIN_SAMPLES_LEAF: 2
-    FRWO_CLF_N_ESTIMATORS: 200
-    OPT_DEBIAS_LAMDA: 0.0012418071008410394
-    WEIGHT_ADJUST_LIST: [[opt_debias, optuna, TPE, 200]]
-    # Fair LogLoss EqOdds Config Params
-    FAIR_LOGLOSS_EQODDS_C: 0.005430941290620803
-    FAIR_LOGLOSS_EQODDS_RANDOM_INIT: false
-    # Superhuman Fairness Neural Network Fixed Config Params
-    SH_NN_FIXED_BASE_FIT_EPOCHS: 14776
-    SH_NN_FIXED_HIDDEN_NODES: 256
-    SH_NN_FIXED_ITERS: 46
-    SH_NN_FIXED_LAMDA: 0.0029712133934558026
-    SH_NN_FIXED_LR_BOOST_FACTOR: 4.3761452477779335
-    SH_NN_FIXED_LR_DECAY_GAMMA_FRAC: 0.5524600756202656
-    SH_NN_FIXED_LR_THETA: 6.139648645716199e-06
 
   # Boston (DISABLED, SINCE NOT ENOUGH DATA FOR GOOD SUBDOMINANCE CALCS)
   # Boston:
@@ -444,120 +410,12 @@ experiments:
 
   Adult:
     MIN_FREQ_FILL_PCT: 0.0
-    # Fair LogLoss DP Config Params
-    FAIR_LOGLOSS_DP_C: 0.0006918387368540275
-    FAIR_LOGLOSS_DP_RANDOM_INIT: true
-    # Fair LogLoss EqOdds Config Params
-    FAIR_LOGLOSS_EQODDS_C: 0.000937754140805154
-    FAIR_LOGLOSS_EQODDS_RANDOM_INIT: false
-    # Superhuman Fairness Neural Network Config Params
-    SH_NN_BASE_FIT_EPOCHS: 30581
-    SH_NN_HIDDEN_NODES: 1024
-    SH_NN_ITERS: 6
-    SH_NN_LAMDA: 0.052486545159021646
-    SH_NN_LR_BOOST_FACTOR: 1.3697374018428718
-    SH_NN_LR_DECAY_GAMMA_FRAC: 0.8383621394533503
-    SH_NN_LR_THETA: 4.3002684550514485e-06
-    # Superhuman Fairness Fixed Config Params
-    SH_FIXED_ITERS: 41
-    SH_FIXED_LAMDA: 2.1145972343252184e-05
-    SH_FIXED_LR_THETA: 0.15415456396873176
-    # Fairness Reward Weight Optimization Config Params
-    FRWO_CLF_MAX_DEPTH: 5
-    FRWO_CLF_MIN_SAMPLES_LEAF: 5
-    FRWO_CLF_N_ESTIMATORS: 200
-    OPT_DEBIAS_LAMDA: 4.8349841099035256e-05
-    WEIGHT_ADJUST_LIST: [[opt_debias, optuna, TPE, 200]]
-    # Superhuman Fairness Config Params
-    SH_ITERS: 25
-    SH_LAMDA: 0.00023019852818829072
-    SH_LR_THETA: 0.043885783176710866
-    # Superhuman Fairness Neural Network Fixed Config Params
-    SH_NN_FIXED_BASE_FIT_EPOCHS: 446
-    SH_NN_FIXED_HIDDEN_NODES: 1024
-    SH_NN_FIXED_ITERS: 100
-    SH_NN_FIXED_LAMDA: 0.023561461322246346
-    SH_NN_FIXED_LR_BOOST_FACTOR: 2.437172103280571
-    SH_NN_FIXED_LR_DECAY_GAMMA_FRAC: 0.9820962556730803
-    SH_NN_FIXED_LR_THETA: 4.1347442092081316e-05
 
   ACSIncome__MA:
     MIN_FREQ_FILL_PCT: 0.0
-    # Fair LogLoss DP Config Params
-    FAIR_LOGLOSS_DP_C: 0.008832472012696862
-    FAIR_LOGLOSS_DP_RANDOM_INIT: true
-    # Fair LogLoss EqOdds Config Params
-    FAIR_LOGLOSS_EQODDS_C: 0.006703193385015265
-    FAIR_LOGLOSS_EQODDS_RANDOM_INIT: true
-    # Superhuman Fairness Neural Network Config Params
-    SH_NN_BASE_FIT_EPOCHS: 2701
-    SH_NN_HIDDEN_NODES: 1024
-    SH_NN_ITERS: 48
-    SH_NN_LAMDA: 5.736492739307432e-05
-    SH_NN_LR_BOOST_FACTOR: 1.0823938769216126
-    SH_NN_LR_DECAY_GAMMA_FRAC: 0.6139845181716392
-    SH_NN_LR_THETA: 2.1876070485509113e-06
-    # Superhuman Fairness Config Params
-    SH_ITERS: 48
-    SH_LAMDA: 2.2350394946202925e-06
-    SH_LR_THETA: 0.0004870405951653783
-    # Fairness Reward Weight Optimization Config Params
-    FRWO_CLF_MAX_DEPTH: 20
-    FRWO_CLF_MIN_SAMPLES_LEAF: 20
-    FRWO_CLF_N_ESTIMATORS: 100
-    OPT_DEBIAS_LAMDA: 0.00010126902198666345
-    WEIGHT_ADJUST_LIST: [[opt_debias, optuna, GP, 200]]
-    # Superhuman Fairness Fixed Config Params
-    SH_FIXED_ITERS: 21
-    SH_FIXED_LAMDA: 0.3492396993694234
-    SH_FIXED_LR_THETA: 0.7623845273509021
-    # Superhuman Fairness Neural Network Fixed Config Params
-    SH_NN_FIXED_BASE_FIT_EPOCHS: 14224
-    SH_NN_FIXED_HIDDEN_NODES: 512
-    SH_NN_FIXED_ITERS: 83
-    SH_NN_FIXED_LAMDA: 0.0008374400697553982
-    SH_NN_FIXED_LR_BOOST_FACTOR: 9.986625544606637
-    SH_NN_FIXED_LR_DECAY_GAMMA_FRAC: 0.5393913254653271
-    SH_NN_FIXED_LR_THETA: 1.5302922396257397e-05
 
   ACSIncome__MS:
     MIN_FREQ_FILL_PCT: 0.0
-    # Fair LogLoss DP Config Params
-    FAIR_LOGLOSS_DP_C: 0.4241165982704676
-    FAIR_LOGLOSS_DP_RANDOM_INIT: false
-    # Fair LogLoss EqOdds Config Params
-    FAIR_LOGLOSS_EQODDS_C: 2.2915795994282955
-    FAIR_LOGLOSS_EQODDS_RANDOM_INIT: false
-    # Fairness Reward Weight Optimization Config Params
-    FRWO_CLF_MAX_DEPTH: null
-    FRWO_CLF_MIN_SAMPLES_LEAF: 2
-    FRWO_CLF_N_ESTIMATORS: 400
-    OPT_DEBIAS_LAMDA: 0.0002512221280489647
-    WEIGHT_ADJUST_LIST: [[opt_debias, pybobyqa, Multi-Start BOBYQA, 200]]
-    # Superhuman Fairness Config Params
-    SH_ITERS: 31
-    SH_LAMDA: 1.1932194057629597e-07
-    SH_LR_THETA: 0.004460760206912319
-    # Superhuman Fairness Fixed Config Params
-    SH_FIXED_ITERS: 37
-    SH_FIXED_LAMDA: 0.36544463096475305
-    SH_FIXED_LR_THETA: 0.26329675295093935
-    # Superhuman Fairness Neural Network Fixed Config Params
-    SH_NN_FIXED_BASE_FIT_EPOCHS: 5229
-    SH_NN_FIXED_HIDDEN_NODES: 128
-    SH_NN_FIXED_ITERS: 38
-    SH_NN_FIXED_LAMDA: 1.9997540332202594e-05
-    SH_NN_FIXED_LR_BOOST_FACTOR: 22.778917293895923
-    SH_NN_FIXED_LR_DECAY_GAMMA_FRAC: 0.9932091415079372
-    SH_NN_FIXED_LR_THETA: 0.009525743449481856
-    # Superhuman Fairness Neural Network Config Params
-    SH_NN_BASE_FIT_EPOCHS: 35425
-    SH_NN_HIDDEN_NODES: 256
-    SH_NN_ITERS: 35
-    SH_NN_LAMDA: 0.05814494675997437
-    SH_NN_LR_BOOST_FACTOR: 1.0749512428247452
-    SH_NN_LR_DECAY_GAMMA_FRAC: 0.8943827387066229
-    SH_NN_LR_THETA: 1.3113341201887114e-05
 
   ACSIncome__CA:
     MIN_FREQ_FILL_PCT: 0.0

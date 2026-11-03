@@ -1,0 +1,26 @@
+# The main experiment config, run by `uv run frwo` along with every other
+# experiment config in this folder.
+#
+# `uv run frwo-tune` tunes the hyperparameters under this config's settings,
+# and every experiment config then runs with them (see
+# configs/tuned_hyperparameters.yaml). So this config should differ from
+# configs/base.yaml as little as possible.
+#
+# An experiment config holds only where it differs from configs/base.yaml,
+# whose header describes how the two are merged:
+#   SELECTED_DATASETS  which of the base's datasets to run (required).
+#   EXPERT_ALGOS       the experts, if not the base's.
+#   common             settings that replace the base's for every dataset.
+#   experiments        settings that replace the base's for one dataset,
+#                      under the dataset's name.
+
+# Which of the `datasets` of configs/base.yaml to run.
+SELECTED_DATASETS:
+  - COMPAS
+  - Adult
+  - ACSIncome__MA
+  - ACSIncome__MS
+  # - ACSIncome__CA
+  # - ACSIncome__IL
+  # - ACSIncome__AL
+  # - ACSIncome__HI

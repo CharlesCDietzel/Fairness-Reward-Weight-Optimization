@@ -1,11 +1,11 @@
 # W&B sweep: tunes Superhuman Fairness.
 #
 # Run this sweep for every selected dataset, and write its best values to
-# configs/experiments/experiment.yaml.new, with:
+# configs/tuned_hyperparameters.yaml.new, with:
 #   uv run frwo-tune --algorithm "Superhuman Fairness"
 #
 # Every value not listed under `parameters` comes from
-# configs/experiments/experiment.yaml.
+# configs/experiments/main.yaml, merged with configs/base.yaml.
 name: Superhuman Fairness
 project: frwo
 method: bayes
@@ -20,8 +20,6 @@ command:
   - -m
   - frwo.sweep
   - trial
-  - --config
-  - configs/experiments/experiment.yaml
 run_cap: 40
 # How many of this algorithm's trials `frwo-tune` runs at once, across its
 # sweeps. If fewer sweeps are left, the spare trials go to the ones that are.

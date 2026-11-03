@@ -14,10 +14,11 @@ afresh for each trial, from values that depend only on the config). So the
 checkpoint holds those generators' states, along with everything else needed to
 rebuild the run:
 
-* the config file's contents and the `--set`/`--annotate` values, so that
-  editing the config file while the experiment is paused changes nothing,
+* every experiment config it runs, resolved (see `frwo.config.load_config`),
+  and the `--set`/`--annotate` values, so that editing the config files while
+  the experiment is paused changes nothing,
 * the W&B session id, so that the resumed runs join the same session,
-* which trial was the last to finish,
+* which trial was the last to finish, and of which config,
 * the generators' states when that trial's experiment started, which its
   dataset is regenerated from,
 * the generators' states when that trial finished,
@@ -52,7 +53,7 @@ RUNNING_FILE = STATE_DIR / "running.json"
 PAUSE_REQUEST_FILE = STATE_DIR / "pause_request.json"
 CHECKPOINT_FILE = STATE_DIR / "checkpoint.json"
 
-CHECKPOINT_VERSION = 1
+CHECKPOINT_VERSION = 2
 
 
 def read_json(path):

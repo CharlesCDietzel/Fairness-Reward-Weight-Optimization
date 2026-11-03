@@ -9,13 +9,17 @@ One command does all of it:
 
     uv run frwo-tune [--algorithm NAME] [--dataset NAME]
 
-For every selected technique and dataset (or just the ones named) it creates a
-sweep, so that each dataset gets its own hyperparameters, runs trials until
-every sweep has finished, and writes configs/experiments/experiment.yaml.new: a
-copy of configs/experiments/experiment.yaml with each sweep's best values set in
-its dataset's entry. The techniques are tuned one after another, each running as
-many trials at once as the `parallel_sweeps` of its sweep config says, a number
-measured to make that technique's sweeps finish soonest on their own. What it
+It tunes under the settings of the main experiment config,
+configs/experiments/main.yaml, and every experiment config then runs with what
+it finds. For every technique and dataset main.yaml selects (or just the ones
+named) it creates a sweep, so that each dataset gets its own hyperparameters,
+runs trials until every sweep has finished, and writes
+configs/tuned_hyperparameters.yaml.new: a copy of
+configs/tuned_hyperparameters.yaml with each sweep's best values set in its
+dataset's and technique's entry. The techniques are tuned one after another,
+each running as many trials at once as the `parallel_sweeps` of its sweep
+config says, a number measured to make that technique's sweeps finish soonest
+on their own. What it
 has created is recorded in `.tuning_state/`, so that running the same command
 again after an interruption continues the same sweeps.
 
@@ -39,9 +43,11 @@ the server uses, and starts the trials without a `wandb agent`:
 Each trial still is a W&B run of its sweep, so the sweep looks the same in the
 W&B UI. The run comes from `python -m frwo.sweep trial`: it runs the
 experiment script with the suggested hyperparameters as `--set` overrides, in a
-child process, and logs the objective the search minimizes. It runs on a copy of
-the experiment config made when the sweep was created, so that editing the
-config file cannot change a sweep partway through.
+child process, and logs the objective the search minimizes. It runs on the main
+experiment config as it was resolved when the sweep was created (see
+`frwo.config.load_config`), so that editing the config files cannot change a
+sweep partway through. That copy leaves out the tuned hyperparameters, so that
+what a sweep finds never depends on what was tuned before.
 
 The child process is needed because the experiment script reports one W&B run
 per technique, bias type and trial, while inside a sweep every `wandb.init()` is
@@ -75,11 +81,16 @@ import wandb
 import yaml
 
 from frwo.config import (
-    DEFAULT_CONFIG_PATH,
+    MAIN_CONFIG_PATH,
+    REPO_ROOT,
+    TUNED_HYPERPARAMETERS_PATH,
     build_experiment_plan,
+    format_tuned_hyperparameters,
     load_config,
-    resolve_tuned_values,
-    set_experiment_values,
+    load_sweep_configs,
+    load_tuned_hyperparameters,
+    tuned_keys,
+    tuning_fingerprint,
 )
 from frwo.pause import is_alive, read_json, remove_file, write_json
 
@@ -100,11 +111,10 @@ DEFAULT_OBJECTIVE_KEY = "sum_abs_subdominance_val"
 # them has its every run forced onto the trial's run.
 SWEEP_ENV_VARS = ("WANDB_RUN_ID", "WANDB_SWEEP_ID", "WANDB_SWEEP_PARAM_PATH")
 
-REPO_ROOT = DEFAULT_CONFIG_PATH.parents[2]
-SWEEP_CONFIG_DIR = REPO_ROOT / "configs" / "sweeps"
-
-# What `frwo-tune` writes its results to, next to the config file it copies.
-TUNED_CONFIG_PATH = DEFAULT_CONFIG_PATH.with_name(DEFAULT_CONFIG_PATH.name + ".new")
+# What `frwo-tune` writes its results to, for review.
+TUNED_OUTPUT_PATH = TUNED_HYPERPARAMETERS_PATH.with_name(
+    TUNED_HYPERPARAMETERS_PATH.name + ".new"
+)
 
 # The W&B project of `frwo-tune`'s sweeps. It is not the project the final
 # experiments report to because the plotting notebook loads the most recent
@@ -276,7 +286,8 @@ class TuningSweep:
     command : list<str>
         The `command` of its sweep config.
     directory : pathlib.Path
-        Where its state is kept, including its copy of the experiment config.
+        Where its state is kept, including its copy of the resolved main
+        experiment config.
     position : int
         Its place in the order `frwo-tune` was asked to tune.
     exp_info : dict
@@ -309,11 +320,7 @@ class TuningSweep:
     @property
     def tuned_keys(self):
         """The parameters the search chooses: a fixed `value` is not chosen."""
-        return [
-            key
-            for key, spec in self.config["parameters"].items()
-            if "value" not in spec
-        ]
+        return tuned_keys(self.config)
 
     @property
     def run_cap(self):
@@ -361,17 +368,6 @@ class TuningPaused(Exception):
 
 def _log(message):
     print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {message}", flush=True)
-
-
-def _load_sweep_configs():
-    """The contents of every sweep config, by the technique it tunes."""
-    sweep_configs = {}
-    for path in sorted(SWEEP_CONFIG_DIR.glob("*.yaml")):
-        with open(path) as f:
-            sweep_config = yaml.safe_load(f)
-        algorithm = sweep_config["parameters"]["ALGORITHMS"]["value"][0]
-        sweep_configs[algorithm] = sweep_config
-    return sweep_configs
 
 
 def _tune_targets(args, plan, sweep_configs):
@@ -480,10 +476,11 @@ def _can_continue(saved, config, parallel_sweeps, exp_info):
     return True
 
 
-def _open_sweeps(targets, sweep_configs):
+def _open_sweeps(targets, sweep_configs, config):
     """
     Create the sweeps of `targets`, or find the ones an interrupted
     `frwo-tune` left, as long as nothing they depend on has changed since.
+    A new sweep keeps a copy of `config`, the resolved main experiment config.
     """
     entity = os.environ.get("WANDB_ENTITY") or _api().default_entity
 
@@ -502,7 +499,9 @@ def _open_sweeps(targets, sweep_configs):
             sweep_id = wandb.sweep(config, entity=entity, project=TUNING_PROJECT)
             shutil.rmtree(directory, ignore_errors=True)
             directory.mkdir(parents=True)
-            shutil.copyfile(DEFAULT_CONFIG_PATH, directory / "experiment.yaml")
+            (directory / "experiment.yaml").write_text(
+                yaml.safe_dump(config, sort_keys=False)
+            )
             sweep = TuningSweep(
                 name=config["name"],
                 algorithm=algorithm,
@@ -757,17 +756,18 @@ def _best_trial(sweep):
     return min(trials, key=lambda trial: trial["objective"], default=None)
 
 
-def _write_tuned_config(sweeps):
+def _write_tuned_hyperparameters(sweeps):
     """
-    Write `TUNED_CONFIG_PATH`: the experiment config as it is now, with the
-    best values of `sweeps` set in the entries of their datasets.
+    Write `TUNED_OUTPUT_PATH`: the tuned hyperparameters file as it is now,
+    with the best values of `sweeps` set in the entries of their datasets and
+    techniques.
 
     Returns
     -------
     n_written : int
         How many of `sweeps` had a best run to write.
     """
-    text = DEFAULT_CONFIG_PATH.read_text()
+    tuned = load_tuned_hyperparameters()
     n_written = 0
     for sweep in sweeps:
         best = _best_trial(sweep)
@@ -775,16 +775,17 @@ def _write_tuned_config(sweeps):
             _log(f"{sweep.name}: no run was scored, so it has nothing to write.")
             continue
         values = {key: best["params"][key] for key in sweep.tuned_keys}
-        text = set_experiment_values(
-            text,
-            sweep.exp_info["EXPERIMENT_NAME"],
-            resolve_tuned_values(sweep.exp_info, values),
-        )
+        tuned.setdefault(sweep.exp_info["DATASET"], {})[sweep.algorithm] = {
+            "values": values,
+            "objective": best[OBJECTIVE],
+            "sweep": sweep.path,
+            "tuned_against": tuning_fingerprint(sweep.exp_info),
+        }
         n_written += 1
         _log(f"{sweep.name}: best objective {best[OBJECTIVE]:.6g}, {values}")
 
     if n_written:
-        TUNED_CONFIG_PATH.write_text(text)
+        TUNED_OUTPUT_PATH.write_text(format_tuned_hyperparameters(tuned))
     return n_written
 
 
@@ -882,7 +883,7 @@ def _tune(sweeps, registration):
         sys.exit(130)
 
     finished = [sweep for sweep in sweeps if sweep.finished]
-    n_written = _write_tuned_config(finished)
+    n_written = _write_tuned_hyperparameters(finished)
     for sweep in finished:
         _end_wandb_sweep(sweep)
         shutil.rmtree(sweep.directory)
@@ -896,7 +897,7 @@ def _tune(sweeps, registration):
             _save_sweep(sweep)
 
     if n_written:
-        _log(f"Wrote the best values of {n_written} sweeps to {TUNED_CONFIG_PATH}")
+        _log(f"Wrote the best values of {n_written} sweeps to {TUNED_OUTPUT_PATH}")
     n_failed = len(sweeps) - n_written
     if n_failed:
         sys.exit(f"{n_failed} of {len(sweeps)} sweeps did not produce a result.")
@@ -906,19 +907,25 @@ def parse_tune_args(argv=None):
     parser = argparse.ArgumentParser(
         prog="frwo-tune",
         description=(
-            "Tune hyperparameters with W&B sweeps: create the sweeps, run their"
-            f" trials, and write the best values found to {TUNED_CONFIG_PATH.name}"
-            f" next to {DEFAULT_CONFIG_PATH.name}. Running it again after an"
-            " interruption continues the same sweeps."
+            "Tune hyperparameters with W&B sweeps, under the settings of"
+            f" {MAIN_CONFIG_PATH.name}: create the sweeps, run their trials, and"
+            f" write the best values found to {TUNED_OUTPUT_PATH.name}. Running"
+            " it again after an interruption continues the same sweeps."
         ),
     )
     parser.add_argument(
         "--algorithm",
-        help="Only tune this algorithm. Default: every one selected in the config.",
+        help=(
+            "Only tune this algorithm. Default: every one selected in"
+            f" {MAIN_CONFIG_PATH.name}."
+        ),
     )
     parser.add_argument(
         "--dataset",
-        help="Only tune on this dataset. Default: every one selected in the config.",
+        help=(
+            "Only tune on this dataset. Default: every one selected in"
+            f" {MAIN_CONFIG_PATH.name}."
+        ),
     )
     return parser.parse_args(argv)
 
@@ -931,8 +938,9 @@ def tune_main(argv=None):
     """Tune hyperparameters from start to finish. See the module docstring."""
     args = parse_tune_args(argv)
 
-    plan = build_experiment_plan(load_config())
-    sweep_configs = _load_sweep_configs()
+    config = load_config(MAIN_CONFIG_PATH, tuned=False)
+    plan = build_experiment_plan(config)
+    sweep_configs = load_sweep_configs()
     targets = _tune_targets(args, plan, sweep_configs)
     if not targets:
         sys.exit("Nothing to tune: no selected algorithm has hyperparameters.")
@@ -950,7 +958,7 @@ def tune_main(argv=None):
         )
 
     with _TuningRegistration(names) as registration:
-        _tune(_open_sweeps(targets, sweep_configs), registration)
+        _tune(_open_sweeps(targets, sweep_configs, config), registration)
 
 
 def tune_pause_main(argv=None):
@@ -1031,7 +1039,7 @@ def parse_args(argv=None):
         "trial",
         help="Run one sweep trial. Started by `frwo-tune`, not by hand.",
     )
-    trial.add_argument("--config", default=str(DEFAULT_CONFIG_PATH))
+    trial.add_argument("--config", default=str(MAIN_CONFIG_PATH))
     trial.add_argument(
         "--result-file",
         help="Also write the objective to this JSON file, if the trial succeeds.",

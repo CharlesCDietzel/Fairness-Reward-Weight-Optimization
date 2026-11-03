@@ -45,37 +45,79 @@ experiment code.
 After the experiment is run, see [here](#figures) for how to generate the paper's plots.
 
 
-## The experiment config
+## The experiment configs
 
-Every experiment setting lives in `configs/experiments/experiment.yaml`. That
-covers which datasets, experts and techniques are run, and every technique's
-hyperparameters. Its comments document each setting. The file has three parts:
+The experiment settings are split across three kinds of file:
 
-* `SELECTED_DATASETS`, `EXPERT_ALGOS` and `RANDOM_SEED` at the top: which
-  experiments run, with which experts, and the global random seed.
-* `common`: the settings shared by every experiment.
-* `experiments`: one entry per dataset, holding that dataset's own settings.
+* `configs/base.yaml` holds everything the experiment configs share. Its
+  comments document each setting. It has four parts:
+  * `RANDOM_SEED` and `EXPERT_ALGOS` at the top: the global random seed and
+    the experts.
+  * `common`: the settings shared by every experiment.
+  * `datasets`: one entry per dataset, holding that dataset's own settings.
+* `configs/tuned_hyperparameters.yaml` holds every technique's tuned
+  hyperparameters, per dataset. `frwo-tune` writes it (see
+  [tuning](#1-tuning-hyperparameters)), and every experiment config runs with
+  it.
+* `configs/experiments/` holds one file per experiment config, such as one
+  per experiment in the paper. Each holds only how it differs from the base:
+  * `SELECTED_DATASETS` (required): which of the base's datasets to run.
+  * `EXPERT_ALGOS`: the experts, if not the base's.
+  * `common`: settings that replace the base's for every dataset, e.g.
+    `DEMO_BIAS_TYPE_LIST`.
+  * `experiments`: settings that replace the base's for one dataset, under
+    the dataset's name.
 
-Each experiment's settings are `common`, then its own entry, which overrides
-it, so a value set in an experiment's entry applies to that dataset only.
+  `configs/experiments/main.yaml` is the main experiment config:
+  hyperparameters are tuned under its settings, so keep it as close to the
+  base as possible.
 
-Run the experiments with either of these commands:
+Each experiment's settings are the base's `common`, then the dataset's entry
+under the base's `datasets`, then the dataset's tuned hyperparameters, then the
+experiment config's `common`, then its entry for the dataset. Each overrides
+the ones before it. The header of `configs/base.yaml` has the details.
+
+To keep every experiment config on the same hyperparameters and data splits,
+an experiment config can't set:
+
+* a tuned hyperparameter, or
+* `RANDOM_SEED`, `DATA_SPLIT_*` or `N_DATASET_SAMPLES`.
+
+It also can only set settings the base already sets, so a misspelled key is an
+error rather than being silently ignored. Every experiment config is checked
+before any of them starts running.
+
+Run every experiment config, the main one first, with either of these
+commands:
 
 ```sh
 uv run frwo
 python3 src/frwo/FRWO_Biased_Demonstrations.py  # with .venv activated
 ```
 
-Use `--config <file>` to run a different config file, or override single
-values for every experiment with `--set`. `--set` reads each value as JSON, so
-quote lists:
+Use `--config` to run only some of them, by name or by path. It can be given
+more than once:
+
+```sh
+uv run frwo --config main
+uv run frwo --config main --config demo_bias
+```
+
+Override single values for every experiment of every config with `--set`.
+`--set` reads each value as JSON, so quote lists:
 
 ```sh
 uv run frwo --set 'SELECTED_DATASETS=["COMPAS"]' --set SH_ITERS=10
 ```
 
-`--set` only accepts keys the config file already contains, so a misspelled
-key is an error rather than being silently ignored.
+`--set` only accepts keys the configs already contain. Unlike an experiment
+config, it can override tuned hyperparameters, which is handy for a quick test.
+
+`frwo` stops if a technique it would run has no tuned hyperparameters for one
+of its datasets. Tune them first, or run with `--allow-untuned` to use the
+base's defaults instead. It also warns if a dataset's hyperparameters were
+tuned while `main.yaml` (with the base) had different settings for it than it
+has now. That's a sign they should be tuned again.
 
 ## 1. Tuning hyperparameters
 
@@ -91,12 +133,14 @@ It takes these steps on its own:
    gets its own hyperparameters.
 2. It runs the sweeps' trials until every sweep has finished.
 3. It writes the best hyperparameters each sweep found to
-   `configs/experiments/experiment.yaml.new`, ready for you to
+   `configs/tuned_hyperparameters.yaml.new`, ready for you to
    [review](#2-reviewing-and-keeping-the-tuned-hyperparameters).
 
-By default, it tunes every algorithm in `ALGORITHMS` on every dataset in
-`SELECTED_DATASETS`. Two options narrow that down, and you can use them
-together:
+It always tunes under the settings of the main experiment config,
+`configs/experiments/main.yaml`. Every other experiment config then runs with
+the same hyperparameters. By default, it tunes every algorithm in `main.yaml`'s
+`ALGORITHMS` on every dataset in its `SELECTED_DATASETS`. Two options narrow
+that down, and you can use them together:
 
 ```sh
 # One algorithm, on every selected dataset
@@ -109,12 +153,12 @@ uv run frwo-tune --dataset COMPAS
 uv run frwo-tune --algorithm "Superhuman Fairness" --dataset COMPAS
 ```
 
-The named algorithm or dataset doesn't have to be selected in
-`configs/experiments/experiment.yaml`.
+The named algorithm or dataset doesn't have to be selected in `main.yaml`.
 
 Each algorithm's search is set up by its W&B sweep config in `configs/sweeps/`.
 A sweep tunes only that algorithm's settings. Every other setting comes from
-`configs/experiments/experiment.yaml`.
+`main.yaml`, merged with `configs/base.yaml`. The current tuned hyperparameters
+are left out, so a sweep's results never depend on what was tuned before.
 
 | Technique | Sweep config | Tuned settings |
 | --- | --- | --- |
@@ -176,11 +220,10 @@ in their `SWEEP_ID` and `SWEEP_RUN_ID` config. The trials' output goes to
 
 A few things to keep in mind:
 
-* Each sweep runs on a copy of `configs/experiments/experiment.yaml` made when
-  the sweep was created, so editing the file while tuning is running doesn't
-  affect it. When
-  tuning finishes, the best values are written to a copy of the file as it is
-  then.
+* Each sweep runs on a copy of `main.yaml`, merged with the base, made when
+  the sweep was created, so editing the config files while tuning is running
+  doesn't affect it. When tuning finishes, the best values are written to a
+  copy of `configs/tuned_hyperparameters.yaml` as it is then.
 * Every trial runs `N_TRIALS` trials of the unbiased dataset and of each bias
   type in `DATASET_BIAS_TYPE_LIST` and `DEMO_BIAS_TYPE_LIST`, so a sweep costs
   as much as that many final runs, times the number of sweep runs.
@@ -206,14 +249,14 @@ uv run frwo-tune-resume
 ```
 
 Tuning carries on with the next trial, or the next sweep if the paused one had
-finished its trials, and writes `configs/experiments/experiment.yaml.new` when
+finished its trials, and writes `configs/tuned_hyperparameters.yaml.new` when
 the last sweep finishes, as usual. It picks up every paused sweep, whichever
 `frwo-tune` it came from, and runs them all from that one command.
 
 Pausing and resuming doesn't change the results: you get the same trials and the
 same best hyperparameters as a run that was never paused. Paused sweeps keep
-their settings too, so changing `configs/experiments/experiment.yaml` or a
-sweep config while paused has no effect on them.
+their settings too, so changing the config files or a sweep config while
+paused has no effect on them.
 
 Some details:
 
@@ -259,43 +302,61 @@ See `src/frwo/sweep.py` for the details of how a trial is run.
 
 ## 2. Reviewing and keeping the tuned hyperparameters
 
-`configs/experiments/experiment.yaml.new` has exactly the same contents as
-`configs/experiments/experiment.yaml`, comments included, except for the
-hyperparameters that were tuned. Each of those is set to the best value its
-sweep found, in its dataset's entry under `experiments`, where it overrides
-`common`.
-If the entry doesn't have that setting yet, it's added at the end of the entry.
-Fairness Reward Weight Optimization's best optimizer is written as the entry's
-`WEIGHT_ADJUST_LIST`, keeping its evaluation budget.
+`configs/tuned_hyperparameters.yaml.new` is a copy of
+`configs/tuned_hyperparameters.yaml` with each finished sweep's entry, under
+its dataset and technique, replaced. The other entries are unchanged. Each
+entry holds:
+
+* `values`: the best values the sweep found.
+* `objective`: their mean validation subdominance.
+* `sweep`: the W&B sweep that found them.
+* `tuned_against`: a fingerprint of `main.yaml`'s settings for the dataset when
+  it was tuned, which is how `frwo` notices when they have changed since.
+
+Fairness Reward Weight Optimization's best optimizer is written as
+`OPT_DEBIAS_OPTIMIZER`. When an experiment runs, it is swapped into every
+`opt_debias` entry of the experiment config's `WEIGHT_ADJUST_LIST`, keeping
+that entry's evaluation budget.
 
 Compare the two files, and if you're happy with the new values, replace the old
-config with the new one:
+file with the new one:
 
 ```sh
-diff configs/experiments/experiment.yaml configs/experiments/experiment.yaml.new
-mv configs/experiments/experiment.yaml.new configs/experiments/experiment.yaml
+diff configs/tuned_hyperparameters.yaml configs/tuned_hyperparameters.yaml.new
+mv configs/tuned_hyperparameters.yaml.new configs/tuned_hyperparameters.yaml
 ```
 
-Git ignores `configs/experiments/experiment.yaml.new`. It is overwritten the
+Git ignores `configs/tuned_hyperparameters.yaml.new`. It is overwritten the
 next time tuning finishes, and is always built from the current
-`configs/experiments/experiment.yaml`. So if you tune in stages, for example one
+`configs/tuned_hyperparameters.yaml`. So if you tune in stages, for example one
 algorithm at a time, keep each result before starting the next.
 
 ## 3. Running the final experiments
 
-Set `N_TRIALS` in `common` to the number of trials to average over. 3 is the
-number used for the paper results. Check that `SELECTED_DATASETS` lists every
-dataset to report on, then run:
+Set `N_TRIALS` in the base's `common` to the number of trials to average over.
+3 is the number used for the paper results. Check that each experiment
+config's `SELECTED_DATASETS` lists every dataset to report on, then run:
 
 ```sh
 uv run frwo
 ```
 
+That runs every experiment config in `configs/experiments/`, the main one
+first. Each config starts from the same random seed, so its results are the
+same whether it runs alone (`--config`) or after the others. Each bias type
+also draws its random numbers from a seed of its own, so a config's unbiased
+runs are identical to `main.yaml`'s whatever demo bias types it lists, and each
+bias type's results don't depend on which other bias types are listed. A
+dataset bias type can still change which data split is chosen, though.
+
 The results go to the W&B project `frwo`, or to the project named by the
 `WANDB_PROJECT` environment variable. The script logs a W&B session id when it
-starts and again when it finishes. To plot that session, set `WANDB_SESSION` in
-the plotting notebook to that id; the default is the most recent session in
-the project.
+starts and again when it finishes. Every config of one run shares that
+session, and each run records its config's name as `CONFIG_NAME`. To plot an
+experiment config, set `WANDB_CONFIG` in the plotting notebook to its name. The
+default is `main`. The notebook then loads the most recent session that ran
+that config, or the session set as `WANDB_SESSION`. It saves each config's
+LaTeX tables in their own folder, under `experiment_output/frwo/exp_tables/`.
 
 ### Pausing and resuming
 
@@ -314,17 +375,17 @@ left off, run:
 uv run frwo-resume
 ```
 
-The experiment continues with the next trial, or the next experiment if the
-paused one had finished its trials.
+The experiment continues with the next trial, or the next experiment (or
+experiment config) if the paused one had finished its trials.
 
 Pausing and resuming doesn't change the results. The experiment saves its
 random number generators' states when it pauses and restores them when it
 resumes. A paused-and-resumed run's results are identical to an uninterrupted
 run's, apart from timestamps and runtimes. The resumed runs also join the same
 W&B session, so the plotting notebook sees one set of results. The experiment
-uses the config as it was when the run started, so editing
-`configs/experiments/experiment.yaml` while it is paused has no effect until the
-next new run. It also reuses the original `--set` and `--annotate` values.
+uses the configs as they were when the run started, tuned hyperparameters
+included, so editing the config files while it is paused has no effect until
+the next new run. It also reuses the original `--set` and `--annotate` values.
 
 Some details:
 
@@ -393,8 +454,9 @@ paper compares itself against, ported from the same repository into
 `src/frwo/sh/baselines.py` (with the Rezaei et al. classifiers vendored
 verbatim in `src/frwo/sh/fair_logloss.py`).
 
-Which techniques a run covers is the `ALGORITHMS` list in
-`configs/experiments/experiment.yaml`; list any combination:
+Which techniques a run covers is the `ALGORITHMS` list in the `common` of
+`configs/base.yaml`, which an experiment config can override; list any
+combination:
 
 ```yaml
 ALGORITHMS:

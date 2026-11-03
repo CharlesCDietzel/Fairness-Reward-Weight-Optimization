@@ -14,10 +14,13 @@ import pandas as pd
 from IPython.display import HTML, display
 
 from frwo.config import (
-    DEFAULT_CONFIG_PATH,
+    EXPERIMENT_CONFIG_DIR,
     build_experiment_plan,
+    check_tuning,
+    discover_configs,
     load_config,
     parse_assignment,
+    resolve_config_arg,
 )
 from frwo.datasets import *
 from frwo.experiment_utils import *
@@ -45,14 +48,21 @@ def parse_args(argv=None):
     parser = argparse.ArgumentParser(
         description=(
             "Train and evaluate Fairness Reward Weight Optimization and its"
-            " baselines, as configured by an experiment config file, and"
+            " baselines, as configured by experiment config files, and"
             " report the results to W&B."
         )
     )
     parser.add_argument(
         "--config",
-        default=str(DEFAULT_CONFIG_PATH),
-        help="The experiment config file. Default: %(default)s",
+        dest="configs",
+        action="append",
+        default=[],
+        metavar="NAME_OR_PATH",
+        help=(
+            "An experiment config to run: the name of a file in"
+            f" {EXPERIMENT_CONFIG_DIR} (e.g. `main`), or a path. Repeatable."
+            " Default: every file there, the main one first."
+        ),
     )
     parser.add_argument(
         "--set",
@@ -61,9 +71,18 @@ def parse_args(argv=None):
         default=[],
         metavar="KEY=VALUE",
         help=(
-            "Override one config value for every experiment, e.g. `--set"
-            " SH_ITERS=10` or `--set 'SELECTED_DATASETS=[\"COMPAS\"]'`. VALUE"
-            " is read as JSON, falling back to a plain string. Repeatable."
+            "Override one config value for every experiment of every config,"
+            " e.g. `--set SH_ITERS=10` or `--set"
+            " 'SELECTED_DATASETS=[\"COMPAS\"]'`. VALUE is read as JSON, falling"
+            " back to a plain string. Repeatable."
+        ),
+    )
+    parser.add_argument(
+        "--allow-untuned",
+        action="store_true",
+        help=(
+            "Run techniques that have no tuned hyperparameters for a dataset"
+            " with the base config's defaults, instead of stopping."
         ),
     )
     parser.add_argument(
@@ -105,6 +124,7 @@ def _run_result_recorder(records):
         records[run.id] = {
             "run_id": run.id,
             "ALGORITHM": run.config["ALGORITHM"],
+            "CONFIG_NAME": run.config["CONFIG_NAME"],
             "EXPERIMENT_NAME": run.config["EXPERIMENT_NAME"],
             "DATASET": run.config["DATASET"],
             "BIAS_TYPE": run.config["BIAS_TYPE"],
@@ -147,12 +167,37 @@ def main(argv=None):
     args = parse_args(argv)
     _setup_output()
 
-    # Every experiment setting lives in the config file; see the header of
-    # configs/experiments/experiment.yaml for how it is laid out.
-    logging.info(f"Loading experiment config: {args.config}")
+    # Every experiment setting lives in the config files; see the header of
+    # configs/base.yaml for how they are laid out.
+    paths = (
+        [resolve_config_arg(text) for text in args.configs]
+        if args.configs
+        else discover_configs()
+    )
+    names = [path.stem for path in paths]
+    duplicates = sorted({name for name in names if names.count(name) > 1})
+    if duplicates:
+        sys.exit(f"More than one experiment config is named {duplicates}.")
+
+    # Check every config before running any, so that a mistake in the last
+    # one doesn't surface hours into the first.
+    configs = []
+    for path in paths:
+        logging.info(f"Loading experiment config: {path}")
+        config = load_config(path)
+        check_tuning(
+            config,
+            build_experiment_plan(
+                config,
+                overrides=dict(parse_assignment(text) for text in args.overrides),
+                annotations=dict(parse_assignment(text) for text in args.annotate),
+            ),
+            allow_untuned=args.allow_untuned,
+        )
+        configs.append(config)
+
     run_experiments(
-        config=load_config(args.config),
-        config_path=args.config,
+        configs=configs,
         overrides=args.overrides,
         annotations=args.annotate,
         results_file=args.results_file,
@@ -191,14 +236,14 @@ def resume_main(argv=None):
         )
 
     _setup_output()
+    config_names = ", ".join(config["CONFIG_NAME"] for config in checkpoint["configs"])
     logging.info(
         f"Resuming the experiment paused after {checkpoint['paused_after']},"
-        f" with the config {checkpoint['config_path']} as it was when the"
+        f" with the configs {config_names} as they were when the"
         " experiment started."
     )
     run_experiments(
-        config=checkpoint["config"],
-        config_path=checkpoint["config_path"],
+        configs=checkpoint["configs"],
         overrides=checkpoint["overrides"],
         annotations=checkpoint["annotations"],
         results_file=checkpoint["results_file"],
@@ -208,8 +253,7 @@ def resume_main(argv=None):
 
 
 def run_experiments(
-    config,
-    config_path,
+    configs,
     overrides,
     annotations,
     results_file,
@@ -217,15 +261,14 @@ def run_experiments(
     resume=None,
 ):
     """
-    Run every experiment the config selects, or, given the checkpoint of a
-    paused experiment as `resume`, the ones it had not finished yet.
+    Run every experiment each config selects, one config after another, or,
+    given the checkpoint of a paused experiment as `resume`, the ones it had
+    not finished yet.
 
     Parameters
     ----------
-    config : dict
-        The contents of the config file.
-    config_path : str
-        Where the config file is. Only recorded in a checkpoint, for the log.
+    configs : list<dict>
+        The resolved configs, from `load_config()`.
     overrides, annotations : list<str>
         The `--set` and `--annotate` values, as `KEY=VALUE` text.
     results_file : str or None
@@ -235,14 +278,14 @@ def run_experiments(
     resume : dict, Optional
         The checkpoint to resume from (see `frwo.pause`).
     """
-    plan = build_experiment_plan(
-        config,
-        overrides=dict(parse_assignment(text) for text in overrides),
-        annotations=dict(parse_assignment(text) for text in annotations),
-    )
-
-    np.random.seed(plan.random_seed)
-    random.seed(plan.random_seed)
+    plans = [
+        build_experiment_plan(
+            config,
+            overrides=dict(parse_assignment(text) for text in overrides),
+            annotations=dict(parse_assignment(text) for text in annotations),
+        )
+        for config in configs
+    ]
 
     run_records = dict(resume["run_records"]) if resume else {}
     if results_file:
@@ -256,58 +299,74 @@ def run_experiments(
     # Every run of every experiment below shares this one session id, which is
     # what lets the plotting notebook pick out this execution's results rather
     # than mixing them with those of earlier executions. A resumed experiment
-    # keeps its session id, so it is still one session.
+    # keeps its session id, so it is still one session. Each run also records
+    # its config's CONFIG_NAME, which the notebook selects by within a session.
     session_id = resume["session_id"] if resume else new_session_id()
     logging.info(f"Logging results to W&B project: {WANDB_PROJECT}")
     logging.info(f"W&B session: {session_id}")
 
-    # Every experiment to run, in order: each selected one, once per expert.
-    # `exp_i` and `expert_i` locate it in the plan, which is how a checkpoint
-    # records where the experiment paused.
+    # Every experiment to run, in order: each config's selected ones, once per
+    # expert. `config_i`, `exp_i` and `expert_i` locate it in the plans, which
+    # is how a checkpoint records where the experiment paused.
     jobs = []
-    for exp_i, base_exp_info in enumerate(plan.experiments):
-        if base_exp_info["DATASET"] not in plan.selected_datasets:
-            logging.info(
-                f"Skipping experiment {base_exp_info['EXPERIMENT_NAME']} since it is not in the selected datasets list."
-            )
-            continue
-        for expert_i, expert_algo in enumerate(plan.expert_algos):
-            exp_info = dict(base_exp_info)
-            exp_info["EXPERT_ALGO"] = expert_algo
-            jobs.append((exp_i, expert_i, exp_info))
+    for config_i, plan in enumerate(plans):
+        for exp_i, base_exp_info in enumerate(plan.experiments):
+            if base_exp_info["DATASET"] not in plan.selected_datasets:
+                logging.info(
+                    f"Skipping experiment {base_exp_info['EXPERIMENT_NAME']} of"
+                    f" config {plan.config_name} since it is not in the selected"
+                    " datasets list."
+                )
+                continue
+            for expert_i, expert_algo in enumerate(plan.expert_algos):
+                exp_info = dict(base_exp_info)
+                exp_info["EXPERT_ALGO"] = expert_algo
+                jobs.append((config_i, exp_i, expert_i, exp_info))
 
     with (
         PauseListener(session_id) if pausable else contextlib.nullcontext()
     ) as listener:
         try:
-            for job_i, (exp_i, expert_i, exp_info) in enumerate(jobs):
+            seeded_config_i = None
+            for job_i, (config_i, exp_i, expert_i, exp_info) in enumerate(jobs):
+                plan = plans[config_i]
                 logging.info(
                     f"EXPERIMENT {expert_i+1}/{len(plan.expert_algos)}"
                     f" of {exp_info['EXPERIMENT_NAME']}"
+                    f" (config {plan.config_name})"
                 )
+
+                # Each config starts from its own seed, so that its results are
+                # the same whichever configs ran before it.
+                if config_i != seeded_config_i:
+                    np.random.seed(plan.random_seed)
+                    random.seed(plan.random_seed)
+                    seeded_config_i = config_i
 
                 # Until a resumed experiment reaches the first trial it has not
                 # run, skip what it ran before the pause.
                 first_trial = 0
                 trial_rng_state = None
                 if resume is not None:
-                    last_exp_i, last_expert_i, last_trial = resume["last_completed"]
-                    last_job = (last_exp_i, last_expert_i)
-                    if (exp_i, expert_i) < last_job or (
-                        (exp_i, expert_i) == last_job
-                        and last_trial + 1 >= exp_info["N_TRIALS"]
+                    *last_job, last_trial = resume["last_completed"]
+                    last_job = tuple(last_job)
+                    job = (config_i, exp_i, expert_i)
+                    if job < last_job or (
+                        job == last_job and last_trial + 1 >= exp_info["N_TRIALS"]
                     ):
                         logging.info("Skipping it, since it finished before the pause.")
                         continue
-                    if (exp_i, expert_i) == last_job:
+                    if job == last_job:
                         # Paused partway through this experiment: regenerate
                         # its dataset from the same random state as before,
                         # then pick up the random state the last trial left.
                         first_trial = last_trial + 1
                         restore_rng_state(resume["experiment_rng_state"])
                         trial_rng_state = resume["rng_state"]
-                    else:
+                    elif config_i == last_job[0]:
                         restore_rng_state(resume["rng_state"])
+                    # Otherwise this is the first experiment of a config the
+                    # pause came before, which starts from its own seed.
                     logging.info(f"Resuming it at trial {first_trial}.")
                     resume = None
 
@@ -355,16 +414,16 @@ def run_experiments(
                     save_checkpoint(
                         {
                             "session_id": session_id,
-                            "config_path": str(config_path),
-                            "config": config,
+                            "configs": configs,
                             "overrides": list(overrides),
                             "annotations": list(annotations),
                             "results_file": results_file,
-                            "last_completed": [exp_i, expert_i, trial_i],
+                            "last_completed": [config_i, exp_i, expert_i, trial_i],
                             "paused_after": (
                                 f"trial {trial_i} of experiment"
                                 f" {exp_info['EXPERIMENT_NAME']} with expert"
-                                f" {exp_info['EXPERT_ALGO']}"
+                                f" {exp_info['EXPERT_ALGO']}, of config"
+                                f" {plan.config_name}"
                             ),
                             "experiment_rng_state": experiment_rng_state,
                             "rng_state": capture_rng_state(),

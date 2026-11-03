@@ -16,4 +16,4 @@ dist/
 wandb/
 .experiment_state/
 .tuning_state/
-configs/experiments/*.new
+configs/*.new

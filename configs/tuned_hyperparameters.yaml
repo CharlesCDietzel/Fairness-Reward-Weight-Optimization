@@ -1,0 +1,273 @@
+# The hyperparameters `uv run frwo-tune` found, under the settings of
+# configs/experiments/main.yaml. Every experiment config runs with them.
+#
+# Written by `frwo-tune` (as tuned_hyperparameters.yaml.new, for review),
+# by dataset and then technique:
+#   values:        the best values its sweep found.
+#   objective:     their mean validation subdominance.
+#   sweep:         the W&B sweep that found them.
+#   tuned_against: a fingerprint of main.yaml's settings for the dataset
+#                  when they were tuned (see `tuning_fingerprint()` in
+#                  src/frwo/config.py). `frwo` warns when it no longer
+#                  matches. null for values tuned before it was recorded.
+
+COMPAS:
+  Fair LogLoss DP:
+    values:
+      FAIR_LOGLOSS_DP_C: 0.03252274616873708
+      FAIR_LOGLOSS_DP_RANDOM_INIT: true
+    objective: null
+    sweep: null
+    tuned_against: null
+  Fair LogLoss EqOdds:
+    values:
+      FAIR_LOGLOSS_EQODDS_C: 0.005430941290620803
+      FAIR_LOGLOSS_EQODDS_RANDOM_INIT: false
+    objective: null
+    sweep: null
+    tuned_against: null
+  Fairness Reward Weight Optimization:
+    values:
+      OPT_DEBIAS_OPTIMIZER: optuna/TPE
+      FRWO_CLF_N_ESTIMATORS: 200
+      FRWO_CLF_MAX_DEPTH: 5
+      FRWO_CLF_MIN_SAMPLES_LEAF: 2
+      OPT_DEBIAS_LAMDA: 0.0012418071008410394
+    objective: null
+    sweep: null
+    tuned_against: null
+  Superhuman Fairness:
+    values:
+      SH_ITERS: 11
+      SH_LR_THETA: 0.0011627711891745746
+      SH_LAMDA: 1.2236705262018702e-06
+    objective: null
+    sweep: null
+    tuned_against: null
+  Superhuman Fairness Fixed:
+    values:
+      SH_FIXED_ITERS: 31
+      SH_FIXED_LR_THETA: 0.0584638628103295
+      SH_FIXED_LAMDA: 0.03264095944246435
+    objective: null
+    sweep: null
+    tuned_against: null
+  Superhuman Fairness Neural Network:
+    values:
+      SH_NN_ITERS: 25
+      SH_NN_LR_THETA: 1.8756443084421072e-06
+      SH_NN_LAMDA: 0.03876437301911277
+      SH_NN_HIDDEN_NODES: 256
+      SH_NN_BASE_FIT_EPOCHS: 37678
+      SH_NN_LR_BOOST_FACTOR: 2.0729952724193645
+      SH_NN_LR_DECAY_GAMMA_FRAC: 0.5485464041257364
+    objective: null
+    sweep: null
+    tuned_against: null
+  Superhuman Fairness Neural Network Fixed:
+    values:
+      SH_NN_FIXED_ITERS: 46
+      SH_NN_FIXED_LR_THETA: 6.139648645716199e-06
+      SH_NN_FIXED_LAMDA: 0.0029712133934558026
+      SH_NN_FIXED_HIDDEN_NODES: 256
+      SH_NN_FIXED_BASE_FIT_EPOCHS: 14776
+      SH_NN_FIXED_LR_BOOST_FACTOR: 4.3761452477779335
+      SH_NN_FIXED_LR_DECAY_GAMMA_FRAC: 0.5524600756202656
+    objective: null
+    sweep: null
+    tuned_against: null
+Adult:
+  Fair LogLoss DP:
+    values:
+      FAIR_LOGLOSS_DP_C: 0.0006918387368540275
+      FAIR_LOGLOSS_DP_RANDOM_INIT: true
+    objective: null
+    sweep: null
+    tuned_against: null
+  Fair LogLoss EqOdds:
+    values:
+      FAIR_LOGLOSS_EQODDS_C: 0.000937754140805154
+      FAIR_LOGLOSS_EQODDS_RANDOM_INIT: false
+    objective: null
+    sweep: null
+    tuned_against: null
+  Fairness Reward Weight Optimization:
+    values:
+      OPT_DEBIAS_OPTIMIZER: optuna/TPE
+      FRWO_CLF_N_ESTIMATORS: 200
+      FRWO_CLF_MAX_DEPTH: 5
+      FRWO_CLF_MIN_SAMPLES_LEAF: 5
+      OPT_DEBIAS_LAMDA: 4.8349841099035256e-05
+    objective: null
+    sweep: null
+    tuned_against: null
+  Superhuman Fairness:
+    values:
+      SH_ITERS: 25
+      SH_LR_THETA: 0.043885783176710866
+      SH_LAMDA: 0.00023019852818829072
+    objective: null
+    sweep: null
+    tuned_against: null
+  Superhuman Fairness Fixed:
+    values:
+      SH_FIXED_ITERS: 41
+      SH_FIXED_LR_THETA: 0.15415456396873176
+      SH_FIXED_LAMDA: 2.1145972343252184e-05
+    objective: null
+    sweep: null
+    tuned_against: null
+  Superhuman Fairness Neural Network:
+    values:
+      SH_NN_ITERS: 6
+      SH_NN_LR_THETA: 4.3002684550514485e-06
+      SH_NN_LAMDA: 0.052486545159021646
+      SH_NN_HIDDEN_NODES: 1024
+      SH_NN_BASE_FIT_EPOCHS: 30581
+      SH_NN_LR_BOOST_FACTOR: 1.3697374018428718
+      SH_NN_LR_DECAY_GAMMA_FRAC: 0.8383621394533503
+    objective: null
+    sweep: null
+    tuned_against: null
+  Superhuman Fairness Neural Network Fixed:
+    values:
+      SH_NN_FIXED_ITERS: 100
+      SH_NN_FIXED_LR_THETA: 4.1347442092081316e-05
+      SH_NN_FIXED_LAMDA: 0.023561461322246346
+      SH_NN_FIXED_HIDDEN_NODES: 1024
+      SH_NN_FIXED_BASE_FIT_EPOCHS: 446
+      SH_NN_FIXED_LR_BOOST_FACTOR: 2.437172103280571
+      SH_NN_FIXED_LR_DECAY_GAMMA_FRAC: 0.9820962556730803
+    objective: null
+    sweep: null
+    tuned_against: null
+ACSIncome__MA:
+  Fair LogLoss DP:
+    values:
+      FAIR_LOGLOSS_DP_C: 0.008832472012696862
+      FAIR_LOGLOSS_DP_RANDOM_INIT: true
+    objective: null
+    sweep: null
+    tuned_against: null
+  Fair LogLoss EqOdds:
+    values:
+      FAIR_LOGLOSS_EQODDS_C: 0.006703193385015265
+      FAIR_LOGLOSS_EQODDS_RANDOM_INIT: true
+    objective: null
+    sweep: null
+    tuned_against: null
+  Fairness Reward Weight Optimization:
+    values:
+      OPT_DEBIAS_OPTIMIZER: optuna/GP
+      FRWO_CLF_N_ESTIMATORS: 100
+      FRWO_CLF_MAX_DEPTH: 20
+      FRWO_CLF_MIN_SAMPLES_LEAF: 20
+      OPT_DEBIAS_LAMDA: 0.00010126902198666345
+    objective: null
+    sweep: null
+    tuned_against: null
+  Superhuman Fairness:
+    values:
+      SH_ITERS: 48
+      SH_LR_THETA: 0.0004870405951653783
+      SH_LAMDA: 2.2350394946202925e-06
+    objective: null
+    sweep: null
+    tuned_against: null
+  Superhuman Fairness Fixed:
+    values:
+      SH_FIXED_ITERS: 21
+      SH_FIXED_LR_THETA: 0.7623845273509021
+      SH_FIXED_LAMDA: 0.3492396993694234
+    objective: null
+    sweep: null
+    tuned_against: null
+  Superhuman Fairness Neural Network:
+    values:
+      SH_NN_ITERS: 48
+      SH_NN_LR_THETA: 2.1876070485509113e-06
+      SH_NN_LAMDA: 5.736492739307432e-05
+      SH_NN_HIDDEN_NODES: 1024
+      SH_NN_BASE_FIT_EPOCHS: 2701
+      SH_NN_LR_BOOST_FACTOR: 1.0823938769216126
+      SH_NN_LR_DECAY_GAMMA_FRAC: 0.6139845181716392
+    objective: null
+    sweep: null
+    tuned_against: null
+  Superhuman Fairness Neural Network Fixed:
+    values:
+      SH_NN_FIXED_ITERS: 83
+      SH_NN_FIXED_LR_THETA: 1.5302922396257397e-05
+      SH_NN_FIXED_LAMDA: 0.0008374400697553982
+      SH_NN_FIXED_HIDDEN_NODES: 512
+      SH_NN_FIXED_BASE_FIT_EPOCHS: 14224
+      SH_NN_FIXED_LR_BOOST_FACTOR: 9.986625544606637
+      SH_NN_FIXED_LR_DECAY_GAMMA_FRAC: 0.5393913254653271
+    objective: null
+    sweep: null
+    tuned_against: null
+ACSIncome__MS:
+  Fair LogLoss DP:
+    values:
+      FAIR_LOGLOSS_DP_C: 0.4241165982704676
+      FAIR_LOGLOSS_DP_RANDOM_INIT: false
+    objective: null
+    sweep: null
+    tuned_against: null
+  Fair LogLoss EqOdds:
+    values:
+      FAIR_LOGLOSS_EQODDS_C: 2.2915795994282955
+      FAIR_LOGLOSS_EQODDS_RANDOM_INIT: false
+    objective: null
+    sweep: null
+    tuned_against: null
+  Fairness Reward Weight Optimization:
+    values:
+      OPT_DEBIAS_OPTIMIZER: pybobyqa/Multi-Start BOBYQA
+      FRWO_CLF_N_ESTIMATORS: 400
+      FRWO_CLF_MAX_DEPTH: null
+      FRWO_CLF_MIN_SAMPLES_LEAF: 2
+      OPT_DEBIAS_LAMDA: 0.0002512221280489647
+    objective: null
+    sweep: null
+    tuned_against: null
+  Superhuman Fairness:
+    values:
+      SH_ITERS: 31
+      SH_LR_THETA: 0.004460760206912319
+      SH_LAMDA: 1.1932194057629597e-07
+    objective: null
+    sweep: null
+    tuned_against: null
+  Superhuman Fairness Fixed:
+    values:
+      SH_FIXED_ITERS: 37
+      SH_FIXED_LR_THETA: 0.26329675295093935
+      SH_FIXED_LAMDA: 0.36544463096475305
+    objective: null
+    sweep: null
+    tuned_against: null
+  Superhuman Fairness Neural Network:
+    values:
+      SH_NN_ITERS: 35
+      SH_NN_LR_THETA: 1.3113341201887114e-05
+      SH_NN_LAMDA: 0.05814494675997437
+      SH_NN_HIDDEN_NODES: 256
+      SH_NN_BASE_FIT_EPOCHS: 35425
+      SH_NN_LR_BOOST_FACTOR: 1.0749512428247452
+      SH_NN_LR_DECAY_GAMMA_FRAC: 0.8943827387066229
+    objective: null
+    sweep: null
+    tuned_against: null
+  Superhuman Fairness Neural Network Fixed:
+    values:
+      SH_NN_FIXED_ITERS: 38
+      SH_NN_FIXED_LR_THETA: 0.009525743449481856
+      SH_NN_FIXED_LAMDA: 1.9997540332202594e-05
+      SH_NN_FIXED_HIDDEN_NODES: 128
+      SH_NN_FIXED_BASE_FIT_EPOCHS: 5229
+      SH_NN_FIXED_LR_BOOST_FACTOR: 22.778917293895923
+      SH_NN_FIXED_LR_DECAY_GAMMA_FRAC: 0.9932091415079372
+    objective: null
+    sweep: null
+    tuned_against: null
