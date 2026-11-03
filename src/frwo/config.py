@@ -1,10 +1,11 @@
 """
-Loading of the experiment configuration file, configs/experiment.yaml.
+Loading of the experiment configuration file,
+configs/experiments/experiment.yaml.
 
 The file holds everything the experiment script used to set up in Python: the
 `exp_info` values shared by every experiment (`common`), each experiment's own
 values (`experiments`), and which experiments and experts a run covers. See the
-header of configs/experiment.yaml for how they are merged.
+header of configs/experiments/experiment.yaml for how they are merged.
 
 `build_experiment_plan()` turns the file into exactly the `exp_info` dicts the
 experiment code has always received, and applies `--set KEY=VALUE` overrides on
@@ -24,7 +25,10 @@ from pathlib import Path
 import yaml
 
 DEFAULT_CONFIG_PATH = (
-    Path(__file__).resolve().parents[2] / "configs" / "experiment.yaml"
+    Path(__file__).resolve().parents[2]
+    / "configs"
+    / "experiments"
+    / "experiment.yaml"
 )
 
 # The top-level config values: they configure the run as a whole rather than

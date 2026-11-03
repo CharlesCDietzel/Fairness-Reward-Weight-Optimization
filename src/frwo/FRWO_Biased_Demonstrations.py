@@ -148,7 +148,7 @@ def main(argv=None):
     _setup_output()
 
     # Every experiment setting lives in the config file; see the header of
-    # configs/experiment.yaml for how it is laid out.
+    # configs/experiments/experiment.yaml for how it is laid out.
     logging.info(f"Loading experiment config: {args.config}")
     run_experiments(
         config=load_config(args.config),

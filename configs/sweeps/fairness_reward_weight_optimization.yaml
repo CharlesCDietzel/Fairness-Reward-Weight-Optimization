@@ -1,10 +1,11 @@
 # W&B sweep: tunes Fairness Reward Weight Optimization.
 #
 # Run this sweep for every selected dataset, and write its best values to
-# configs/experiment.yaml.new, with:
+# configs/experiments/experiment.yaml.new, with:
 #   uv run frwo-tune --algorithm "Fairness Reward Weight Optimization"
 #
-# Every value not listed under `parameters` comes from configs/experiment.yaml.
+# Every value not listed under `parameters` comes from
+# configs/experiments/experiment.yaml.
 name: Fairness Reward Weight Optimization
 project: frwo
 method: bayes
@@ -20,7 +21,7 @@ command:
   - frwo.sweep
   - trial
   - --config
-  - configs/experiment.yaml
+  - configs/experiments/experiment.yaml
 run_cap: 40
 # How many of this algorithm's trials `frwo-tune` runs at once, across its
 # sweeps. If fewer sweeps are left, the spare trials go to the ones that are.

@@ -47,8 +47,8 @@ After the experiment is run, see [here](#figures) for how to generate the paper'
 
 ## The experiment config
 
-Every experiment setting lives in `configs/experiment.yaml`. That covers which
-datasets, experts and techniques are run, and every technique's
+Every experiment setting lives in `configs/experiments/experiment.yaml`. That
+covers which datasets, experts and techniques are run, and every technique's
 hyperparameters. Its comments document each setting. The file has three parts:
 
 * `SELECTED_DATASETS`, `EXPERT_ALGOS` and `RANDOM_SEED` at the top: which
@@ -91,7 +91,7 @@ It takes these steps on its own:
    gets its own hyperparameters.
 2. It runs the sweeps' trials until every sweep has finished.
 3. It writes the best hyperparameters each sweep found to
-   `configs/experiment.yaml.new`, ready for you to
+   `configs/experiments/experiment.yaml.new`, ready for you to
    [review](#2-reviewing-and-keeping-the-tuned-hyperparameters).
 
 By default, it tunes every algorithm in `ALGORITHMS` on every dataset in
@@ -110,11 +110,11 @@ uv run frwo-tune --algorithm "Superhuman Fairness" --dataset COMPAS
 ```
 
 The named algorithm or dataset doesn't have to be selected in
-`configs/experiment.yaml`.
+`configs/experiments/experiment.yaml`.
 
 Each algorithm's search is set up by its W&B sweep config in `configs/sweeps/`.
 A sweep tunes only that algorithm's settings. Every other setting comes from
-`configs/experiment.yaml`.
+`configs/experiments/experiment.yaml`.
 
 | Technique | Sweep config | Tuned settings |
 | --- | --- | --- |
@@ -176,8 +176,9 @@ in their `SWEEP_ID` and `SWEEP_RUN_ID` config. The trials' output goes to
 
 A few things to keep in mind:
 
-* Each sweep runs on a copy of `configs/experiment.yaml` made when the sweep was
-  created, so editing the file while tuning is running doesn't affect it. When
+* Each sweep runs on a copy of `configs/experiments/experiment.yaml` made when
+  the sweep was created, so editing the file while tuning is running doesn't
+  affect it. When
   tuning finishes, the best values are written to a copy of the file as it is
   then.
 * Every trial runs `N_TRIALS` trials of the unbiased dataset and of each bias
@@ -205,14 +206,14 @@ uv run frwo-tune-resume
 ```
 
 Tuning carries on with the next trial, or the next sweep if the paused one had
-finished its trials, and writes `configs/experiment.yaml.new` when the last sweep
-finishes, as usual. It picks up every paused sweep, whichever `frwo-tune` it
-came from, and runs them all from that one command.
+finished its trials, and writes `configs/experiments/experiment.yaml.new` when
+the last sweep finishes, as usual. It picks up every paused sweep, whichever
+`frwo-tune` it came from, and runs them all from that one command.
 
 Pausing and resuming doesn't change the results: you get the same trials and the
 same best hyperparameters as a run that was never paused. Paused sweeps keep
-their settings too, so changing `configs/experiment.yaml` or a sweep config while
-paused has no effect on them.
+their settings too, so changing `configs/experiments/experiment.yaml` or a
+sweep config while paused has no effect on them.
 
 Some details:
 
@@ -258,10 +259,11 @@ See `src/frwo/sweep.py` for the details of how a trial is run.
 
 ## 2. Reviewing and keeping the tuned hyperparameters
 
-`configs/experiment.yaml.new` has exactly the same contents as
-`configs/experiment.yaml`, comments included, except for the hyperparameters
-that were tuned. Each of those is set to the best value its sweep found, in its
-dataset's entry under `experiments`, where it overrides `common`.
+`configs/experiments/experiment.yaml.new` has exactly the same contents as
+`configs/experiments/experiment.yaml`, comments included, except for the
+hyperparameters that were tuned. Each of those is set to the best value its
+sweep found, in its dataset's entry under `experiments`, where it overrides
+`common`.
 If the entry doesn't have that setting yet, it's added at the end of the entry.
 Fairness Reward Weight Optimization's best optimizer is written as the entry's
 `WEIGHT_ADJUST_LIST`, keeping its evaluation budget.
@@ -270,14 +272,14 @@ Compare the two files, and if you're happy with the new values, replace the old
 config with the new one:
 
 ```sh
-diff configs/experiment.yaml configs/experiment.yaml.new
-mv configs/experiment.yaml.new configs/experiment.yaml
+diff configs/experiments/experiment.yaml configs/experiments/experiment.yaml.new
+mv configs/experiments/experiment.yaml.new configs/experiments/experiment.yaml
 ```
 
-Git ignores `configs/experiment.yaml.new`. It is overwritten the next time
-tuning finishes, and is always built from the current
-`configs/experiment.yaml`. So if you tune in stages, for example one algorithm
-at a time, keep each result before starting the next.
+Git ignores `configs/experiments/experiment.yaml.new`. It is overwritten the
+next time tuning finishes, and is always built from the current
+`configs/experiments/experiment.yaml`. So if you tune in stages, for example one
+algorithm at a time, keep each result before starting the next.
 
 ## 3. Running the final experiments
 
@@ -321,8 +323,8 @@ resumes. A paused-and-resumed run's results are identical to an uninterrupted
 run's, apart from timestamps and runtimes. The resumed runs also join the same
 W&B session, so the plotting notebook sees one set of results. The experiment
 uses the config as it was when the run started, so editing
-`configs/experiment.yaml` while it is paused has no effect until the next new
-run. It also reuses the original `--set` and `--annotate` values.
+`configs/experiments/experiment.yaml` while it is paused has no effect until the
+next new run. It also reuses the original `--set` and `--annotate` values.
 
 Some details:
 
@@ -392,7 +394,7 @@ paper compares itself against, ported from the same repository into
 verbatim in `src/frwo/sh/fair_logloss.py`).
 
 Which techniques a run covers is the `ALGORITHMS` list in
-`configs/experiment.yaml`; list any combination:
+`configs/experiments/experiment.yaml`; list any combination:
 
 ```yaml
 ALGORITHMS:

@@ -1,10 +1,11 @@
 # W&B sweep: tunes Fair LogLoss DP.
 #
 # Run this sweep for every selected dataset, and write its best values to
-# configs/experiment.yaml.new, with:
+# configs/experiments/experiment.yaml.new, with:
 #   uv run frwo-tune --algorithm "Fair LogLoss DP"
 #
-# Every value not listed under `parameters` comes from configs/experiment.yaml.
+# Every value not listed under `parameters` comes from
+# configs/experiments/experiment.yaml.
 name: Fair LogLoss DP
 project: frwo
 method: bayes
@@ -20,7 +21,7 @@ command:
   - frwo.sweep
   - trial
   - --config
-  - configs/experiment.yaml
+  - configs/experiments/experiment.yaml
 run_cap: 40
 # How many of this algorithm's trials `frwo-tune` runs at once, across its
 # sweeps. If fewer sweeps are left, the spare trials go to the ones that are.

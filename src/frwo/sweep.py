@@ -11,13 +11,13 @@ One command does all of it:
 
 For every selected technique and dataset (or just the ones named) it creates a
 sweep, so that each dataset gets its own hyperparameters, runs trials until
-every sweep has finished, and writes configs/experiment.yaml.new: a copy of
-configs/experiment.yaml with each sweep's best values set in its dataset's
-entry. The techniques are tuned one after another, each running as many trials
-at once as the `parallel_sweeps` of its sweep config says, a number measured to
-make that technique's sweeps finish soonest on their own. What it has created
-is recorded in `.tuning_state/`, so that running the same command again after an
-interruption continues the same sweeps.
+every sweep has finished, and writes configs/experiments/experiment.yaml.new: a
+copy of configs/experiments/experiment.yaml with each sweep's best values set in
+its dataset's entry. The techniques are tuned one after another, each running as
+many trials at once as the `parallel_sweeps` of its sweep config says, a number
+measured to make that technique's sweeps finish soonest on their own. What it
+has created is recorded in `.tuning_state/`, so that running the same command
+again after an interruption continues the same sweeps.
 
 `uv run frwo-tune-pause` lets the running trials finish and then exits, and
 `uv run frwo-tune-resume` continues from there.
@@ -100,7 +100,7 @@ DEFAULT_OBJECTIVE_KEY = "sum_abs_subdominance_val"
 # them has its every run forced onto the trial's run.
 SWEEP_ENV_VARS = ("WANDB_RUN_ID", "WANDB_SWEEP_ID", "WANDB_SWEEP_PARAM_PATH")
 
-REPO_ROOT = DEFAULT_CONFIG_PATH.parents[1]
+REPO_ROOT = DEFAULT_CONFIG_PATH.parents[2]
 SWEEP_CONFIG_DIR = REPO_ROOT / "configs" / "sweeps"
 
 # What `frwo-tune` writes its results to, next to the config file it copies.
