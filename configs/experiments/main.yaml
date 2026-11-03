@@ -115,8 +115,7 @@ common:
     # - [demo_corruption_bias, CatBoost, 0.01, gaussian, 1.0]
 
   # Fairness Reward Weight Optimization's training adjustments (see
-  # configs/base.yaml). Keep these empty here: the hyperparameters are tuned
-  # under this config, so set them in an experiment config of their own.
+  # configs/base.yaml).
   ALPHA_ADJUST_LIST:
     # - {EqOpp: 2.0}
   SUBDOM_WEIGHT_ADJUST_LIST:
