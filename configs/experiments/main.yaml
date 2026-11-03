@@ -107,7 +107,7 @@ common:
   #       corrupted classifier biases the train, validation and test splits.
   DEMO_BIAS_TYPE_LIST:
     # - [demo_unbalanced_redlining, 0.2]
-    # - [demo_balanced_redlining, 0.2]
+    - [demo_balanced_redlining, 0.2]
     # - [demo_perfectly_balanced_redlining, 0.2]
     - [demo_noise_bias, 0.2]
     # - [demo_corruption_bias, CatBoost, 0.0001, gaussian, 1.0]
