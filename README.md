@@ -64,7 +64,7 @@ The experiment settings are split across three kinds of file:
   * `SELECTED_DATASETS` (required): which of the base's datasets to run.
   * `EXPERT_ALGOS`: the experts, if not the base's.
   * `common`: settings that replace the base's for every dataset, e.g.
-    `DEMO_BIAS_TYPE_LIST`.
+    `DEMO_BIAS_TYPE_LIST` or `RUN_OPT_DEBIAS`.
   * `experiments`: settings that replace the base's for one dataset, under
     the dataset's name.
 
@@ -86,6 +86,20 @@ an experiment config can't set:
 It also can only set settings the base already sets, so a misspelled key is an
 error rather than being silently ignored. Every experiment config is checked
 before any of them starts running.
+
+`RUN_OPT_DEBIAS` turns Fairness Reward Weight Optimization's `opt_debias`
+weight adjustment on or off for an experiment config:
+
+```yaml
+common:
+  RUN_OPT_DEBIAS: true
+```
+
+With it on, Fairness Reward Weight Optimization first learns a policy for its
+unadjusted reward weights, then optimizes the weights with the dataset's tuned
+`opt_debias` optimizer (its `WEIGHT_ADJUST_LIST` in
+`configs/tuned_hyperparameters.yaml`) and learns a policy for those, each in a
+W&B run of its own. With it off, only the unadjusted run is performed.
 
 Run every experiment config, the main one first, with either of these
 commands:
@@ -313,10 +327,12 @@ entry holds:
 * `tuned_against`: a fingerprint of `main.yaml`'s settings for the dataset when
   it was tuned, which is how `frwo` notices when they have changed since.
 
-Fairness Reward Weight Optimization's best optimizer is written as
-`OPT_DEBIAS_OPTIMIZER`. When an experiment runs, it is swapped into every
-`opt_debias` entry of the experiment config's `WEIGHT_ADJUST_LIST`, keeping
-that entry's evaluation budget.
+The sweep of Fairness Reward Weight Optimization searches over
+`OPT_DEBIAS_OPTIMIZER`, which swaps the optimizer of the base's
+`WEIGHT_ADJUST_LIST` entry and keeps its evaluation budget. Its best optimizer
+is written as the dataset's `WEIGHT_ADJUST_LIST`, e.g.
+`[[opt_debias, optuna, TPE, 200]]`. The sweep always runs the `opt_debias`
+weight adjustment, whatever `main.yaml` sets `RUN_OPT_DEBIAS` to.
 
 Compare the two files, and if you're happy with the new values, replace the old
 file with the new one:

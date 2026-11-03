@@ -3,7 +3,10 @@
 #
 # Written by `frwo-tune` (as tuned_hyperparameters.yaml.new, for review),
 # by dataset and then technique:
-#   values:        the best values its sweep found.
+#   values:        the best values its sweep found. Fairness Reward Weight
+#                  Optimization's best optimizer is written as the
+#                  dataset's WEIGHT_ADJUST_LIST, which runs when an
+#                  experiment config sets RUN_OPT_DEBIAS.
 #   objective:     their mean validation subdominance.
 #   sweep:         the W&B sweep that found them.
 #   tuned_against: a fingerprint of main.yaml's settings for the dataset
@@ -28,7 +31,7 @@ COMPAS:
     tuned_against: null
   Fairness Reward Weight Optimization:
     values:
-      OPT_DEBIAS_OPTIMIZER: optuna/TPE
+      WEIGHT_ADJUST_LIST: [[opt_debias, optuna, TPE, 200]]
       FRWO_CLF_N_ESTIMATORS: 200
       FRWO_CLF_MAX_DEPTH: 5
       FRWO_CLF_MIN_SAMPLES_LEAF: 2
@@ -93,7 +96,7 @@ Adult:
     tuned_against: null
   Fairness Reward Weight Optimization:
     values:
-      OPT_DEBIAS_OPTIMIZER: optuna/TPE
+      WEIGHT_ADJUST_LIST: [[opt_debias, optuna, TPE, 200]]
       FRWO_CLF_N_ESTIMATORS: 200
       FRWO_CLF_MAX_DEPTH: 5
       FRWO_CLF_MIN_SAMPLES_LEAF: 5
@@ -158,7 +161,7 @@ ACSIncome__MA:
     tuned_against: null
   Fairness Reward Weight Optimization:
     values:
-      OPT_DEBIAS_OPTIMIZER: optuna/GP
+      WEIGHT_ADJUST_LIST: [[opt_debias, optuna, GP, 200]]
       FRWO_CLF_N_ESTIMATORS: 100
       FRWO_CLF_MAX_DEPTH: 20
       FRWO_CLF_MIN_SAMPLES_LEAF: 20
@@ -223,7 +226,7 @@ ACSIncome__MS:
     tuned_against: null
   Fairness Reward Weight Optimization:
     values:
-      OPT_DEBIAS_OPTIMIZER: pybobyqa/Multi-Start BOBYQA
+      WEIGHT_ADJUST_LIST: [[opt_debias, pybobyqa, Multi-Start BOBYQA, 200]]
       FRWO_CLF_N_ESTIMATORS: 400
       FRWO_CLF_MAX_DEPTH: null
       FRWO_CLF_MIN_SAMPLES_LEAF: 2

@@ -89,6 +89,7 @@ from frwo.config import (
     load_config,
     load_sweep_configs,
     load_tuned_hyperparameters,
+    resolve_tuned_values,
     tuned_keys,
     tuning_fingerprint,
 )
@@ -776,7 +777,7 @@ def _write_tuned_hyperparameters(sweeps):
             continue
         values = {key: best["params"][key] for key in sweep.tuned_keys}
         tuned.setdefault(sweep.exp_info["DATASET"], {})[sweep.algorithm] = {
-            "values": values,
+            "values": resolve_tuned_values(sweep.exp_info, values),
             "objective": best[OBJECTIVE],
             "sweep": sweep.path,
             "tuned_against": tuning_fingerprint(sweep.exp_info),

@@ -2724,17 +2724,15 @@ def _apply_weight_adjustments(
     subdom_groups,
     run=None,
 ):
-    """Apply a sequence of weight adjustment operations to wi and return the result.
+    """Apply the weight adjustment `weight_adjust` to wi and return the result.
+
+    `weight_adjust` is `()` for the unadjusted weights, or an `opt_debias`
+    entry of `exp_info["WEIGHT_ADJUST_LIST"]`, which optimizes them.
 
     `run` is the W&B run of the policy these weights are being learned for, or
-    `None` to disable W&B logging. Only `"opt_debias"` reports anything to it.
+    `None` to disable W&B logging. Only `opt_debias` reports anything to it.
     """
-    if len(weight_adjust) == 0:
-        pass
-    elif weight_adjust[0] == "mul_negative_weights":
-        mul_factor = weight_adjust[1]
-        wi[wi < 0] = wi[wi < 0] * mul_factor
-    elif weight_adjust[0] == "opt_debias":
+    if weight_adjust:
         library = weight_adjust[1]
         optimizer = weight_adjust[2]
         n_steps = weight_adjust[3] if 3 < len(weight_adjust) else 200
@@ -3884,9 +3882,10 @@ def run_experiment_trial(
     on the unbiased dataset.
 
     The Fairness Reward Weight Optimization technique reports one run for the
-    unadjusted weights, then one per entry in exp_info["WEIGHT_ADJUST_LIST"]
-    (which is not expected to contain "()" itself either), each derived from
-    the unadjusted weights via `_apply_weight_adjustments()`. The Superhuman
+    unadjusted weights, then, if exp_info["RUN_OPT_DEBIAS"], one per
+    `opt_debias` entry in exp_info["WEIGHT_ADJUST_LIST"] (which is not expected
+    to contain "()" itself either), each derived from the unadjusted weights
+    via `_apply_weight_adjustments()`. The Superhuman
     Fairness baseline and the four fair-classification baselines have no reward
     weights to adjust and so each report a single run per bias type.
 
@@ -3919,7 +3918,9 @@ def run_experiment_trial(
     demo_bias_type_list = tuple(exp_info.get("DEMO_BIAS_TYPE_LIST", ()))
     validate_bias_types(dataset_bias_type_list, demo_bias_type_list)
     bias_type_list = ((),) + dataset_bias_type_list + demo_bias_type_list
-    weight_adjust_list = ((),) + tuple(exp_info["WEIGHT_ADJUST_LIST"])
+    weight_adjust_list = ((),)
+    if exp_info["RUN_OPT_DEBIAS"]:
+        weight_adjust_list += tuple(exp_info["WEIGHT_ADJUST_LIST"])
 
     # Which techniques this trial trains and evaluates. Always in ALGORITHMS
     # order, so the FRWO technique runs first and its random draws are
@@ -3964,10 +3965,10 @@ def run_experiment_trial(
     # The unbiased dataset, then every bias type of this trial, each against
     # the same data split, differing only by its bias. Within a bias type,
     # every selected algorithm is trained and evaluated on that same data: the
-    # FRWO technique gets one run for the unadjusted weights and then one
-    # per weight adjustment (weight_adjust_list is not expected to contain
-    # "()" itself; the unadjusted weights always get their own W&B run
-    # regardless of its contents), and the Superhuman Fairness baseline, which
+    # FRWO technique gets one run for the unadjusted weights and then, if
+    # RUN_OPT_DEBIAS is on, one per `opt_debias` weight adjustment (the
+    # unadjusted weights always get their own W&B run regardless), and the
+    # Superhuman Fairness baseline, which
     # has no reward weights to adjust, gets a single run.
     for bias_demos in demos_by_bias_type:
         with _bias_type_random_state(

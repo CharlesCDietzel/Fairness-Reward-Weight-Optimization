@@ -29,8 +29,14 @@ parallel_sweeps: 5
 parameters:
   ALGORITHMS:
     value: [Fairness Reward Weight Optimization]
+  # The objective scores only the weight-adjusted runs, so the `opt_debias`
+  # weight adjustment always runs, whatever main.yaml sets.
+  RUN_OPT_DEBIAS:
+    value: true
   # Swaps the library and optimizer of every `opt_debias` entry of
   # WEIGHT_ADJUST_LIST, keeping its evaluation budget (see src/frwo/config.py).
+  # The best one is written to configs/tuned_hyperparameters.yaml as the
+  # dataset's WEIGHT_ADJUST_LIST.
   OPT_DEBIAS_OPTIMIZER:
     values:
       - optuna/GP

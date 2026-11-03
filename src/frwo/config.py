@@ -7,7 +7,9 @@ Three kinds of file make up an experiment's config:
   `exp_info` values of every experiment (`common`), each dataset's own values
   (`datasets`), the random seed and the experts.
 * configs/tuned_hyperparameters.yaml: the hyperparameters `frwo-tune` found,
-  per dataset and technique. Every experiment config runs with them.
+  per dataset and technique, including each dataset's `opt_debias` weight
+  adjustment (WEIGHT_ADJUST_LIST). Every experiment config runs with them, and
+  turns the weight adjustment on or off with RUN_OPT_DEBIAS.
 * configs/experiments/*.yaml: one file per experiment config, holding only
   where it differs from the base. `frwo-tune` tunes the hyperparameters under
   the main one, configs/experiments/main.yaml.
@@ -90,7 +92,6 @@ TUPLE_KEYS = (
 EMPTYABLE_LIST_KEYS = (
     "DATASET_BIAS_TYPE_LIST",
     "DEMO_BIAS_TYPE_LIST",
-    "WEIGHT_ADJUST_LIST",
 )
 
 # An override that is not itself an `exp_info` key: `"<library>/<optimizer>"`,
@@ -98,9 +99,14 @@ EMPTYABLE_LIST_KEYS = (
 # entry of WEIGHT_ADJUST_LIST while keeping the rest of the entry (its
 # evaluation budget). This is how a sweep tunes Fairness Reward Weight
 # Optimization's weight-debiasing optimizer, which is otherwise buried inside a
-# list, and how the tuned one is stored: an experiment config can then change
-# WEIGHT_ADJUST_LIST and still use the tuned optimizer.
+# list. `frwo-tune` writes the best one as the WEIGHT_ADJUST_LIST it stands
+# for (see `resolve_tuned_values()`).
 OPT_DEBIAS_OPTIMIZER = "OPT_DEBIAS_OPTIMIZER"
+
+# Whether Fairness Reward Weight Optimization runs its `opt_debias` weight
+# adjustment after its unadjusted run. Each experiment config turns it on or
+# off; it never affects what the hyperparameters are tuned on.
+RUN_OPT_DEBIAS = "RUN_OPT_DEBIAS"
 
 # What every `exp_info` records as the experiment config it came from.
 CONFIG_NAME = "CONFIG_NAME"
@@ -185,10 +191,17 @@ def tuned_keys(sweep_config):
 
 
 def tunable_keys(sweep_configs=None):
-    """The keys some sweep tunes, by the technique that tunes them."""
+    """
+    The config keys some sweep tunes, by the technique that tunes them: its
+    tuned parameters, with `OPT_DEBIAS_OPTIMIZER` standing for the
+    WEIGHT_ADJUST_LIST it is written as.
+    """
     sweep_configs = load_sweep_configs() if sweep_configs is None else sweep_configs
     return {
-        algorithm: tuned_keys(sweep_config)
+        algorithm: [
+            "WEIGHT_ADJUST_LIST" if key == OPT_DEBIAS_OPTIMIZER else key
+            for key in tuned_keys(sweep_config)
+        ]
         for algorithm, sweep_config in sweep_configs.items()
     }
 
@@ -203,6 +216,18 @@ def load_tuned_hyperparameters(path=TUNED_HYPERPARAMETERS_PATH):
     return _read_yaml(path) if path.exists() else {}
 
 
+class _TunedHyperparametersDumper(yaml.SafeDumper):
+    """Writes lists on one line, e.g. `[[opt_debias, optuna, TPE, 200]]`."""
+
+
+_TunedHyperparametersDumper.add_representer(
+    list,
+    lambda dumper, data: dumper.represent_sequence(
+        "tag:yaml.org,2002:seq", data, flow_style=True
+    ),
+)
+
+
 def format_tuned_hyperparameters(tuned):
     """The text of a tuned hyperparameters file holding `tuned`."""
     header = (
@@ -211,7 +236,10 @@ def format_tuned_hyperparameters(tuned):
         "#\n"
         "# Written by `frwo-tune` (as tuned_hyperparameters.yaml.new, for review),\n"
         "# by dataset and then technique:\n"
-        "#   values:        the best values its sweep found.\n"
+        "#   values:        the best values its sweep found. Fairness Reward Weight\n"
+        "#                  Optimization's best optimizer is written as the\n"
+        "#                  dataset's WEIGHT_ADJUST_LIST, which runs when an\n"
+        "#                  experiment config sets RUN_OPT_DEBIAS.\n"
         "#   objective:     their mean validation subdominance.\n"
         "#   sweep:         the W&B sweep that found them.\n"
         "#   tuned_against: a fingerprint of main.yaml's settings for the dataset\n"
@@ -220,7 +248,13 @@ def format_tuned_hyperparameters(tuned):
         "#                  matches. null for values tuned before it was recorded.\n"
         "\n"
     )
-    body = yaml.safe_dump(tuned, sort_keys=False, default_flow_style=False, width=1000)
+    body = yaml.dump(
+        tuned,
+        Dumper=_TunedHyperparametersDumper,
+        sort_keys=False,
+        default_flow_style=False,
+        width=1000,
+    )
     return header + body
 
 
@@ -228,11 +262,13 @@ def tuning_fingerprint(exp_info, tunable=None):
     """
     A fingerprint of the settings of an experiment that hyperparameters tuned
     on it depend on: all of them, except which techniques it runs, which config
-    it came from and the tunable hyperparameters themselves.
+    it came from, whether it runs the `opt_debias` weight adjustment (a sweep
+    of Fairness Reward Weight Optimization always does) and the tunable
+    hyperparameters themselves.
     """
     if tunable is None:
         tunable = tunable_keys()
-    excluded = {"ALGORITHMS", CONFIG_NAME, OPT_DEBIAS_OPTIMIZER}
+    excluded = {"ALGORITHMS", CONFIG_NAME, OPT_DEBIAS_OPTIMIZER, RUN_OPT_DEBIAS}
     excluded |= {key for keys in tunable.values() for key in keys}
     settings = {key: value for key, value in exp_info.items() if key not in excluded}
     text = json.dumps(settings, sort_keys=True, default=list)
@@ -417,18 +453,22 @@ def _known_keys(config):
     return keys
 
 
-def _apply_opt_debias_optimizer(weight_adjust_list, optimizer, required=True):
-    """
-    Swap `optimizer` into every `opt_debias` entry of `weight_adjust_list`.
-    Unless `required`, a list without one is left as it is.
-    """
+def _to_list(value):
+    """Turn a tuple -- and every tuple inside it -- into a list."""
+    if isinstance(value, (list, tuple)):
+        return [_to_list(v) for v in value]
+    return value
+
+
+def _apply_opt_debias_optimizer(weight_adjust_list, optimizer):
+    """Swap `optimizer` into every `opt_debias` entry of `weight_adjust_list`."""
     library, sep, name = str(optimizer).partition("/")
     if not sep:
         raise ValueError(
             f"{OPT_DEBIAS_OPTIMIZER} must look like '<library>/<optimizer>',"
             f" e.g. 'optuna/TPE'; got {optimizer!r}."
         )
-    if required and not any(entry[0] == "opt_debias" for entry in weight_adjust_list):
+    if not any(entry[0] == "opt_debias" for entry in weight_adjust_list):
         raise ValueError(
             f"{OPT_DEBIAS_OPTIMIZER} is set, but WEIGHT_ADJUST_LIST has no"
             " 'opt_debias' entry for it to apply to."
@@ -484,7 +524,6 @@ def build_experiment_plan(config, overrides=None, annotations=None):
         exp_info = copy.deepcopy(settings)
         exp_info[CONFIG_NAME] = config[CONFIG_NAME]
         exp_info["RANDOM_SEED"] = top_level["RANDOM_SEED"]
-        tuned_optimizer = exp_info.pop(OPT_DEBIAS_OPTIMIZER, None)
         exp_info |= copy.deepcopy(overrides)
 
         for key in EMPTYABLE_LIST_KEYS:
@@ -493,15 +532,9 @@ def build_experiment_plan(config, overrides=None, annotations=None):
         for key in TUPLE_KEYS:
             if key in exp_info:
                 exp_info[key] = _to_tuple(exp_info[key])
-        # An optimizer given as an override must apply; the tuned one applies
-        # to whatever `opt_debias` entries the experiment config kept.
         if optimizer_override is not None:
             exp_info["WEIGHT_ADJUST_LIST"] = _apply_opt_debias_optimizer(
                 exp_info["WEIGHT_ADJUST_LIST"], optimizer_override
-            )
-        elif tuned_optimizer is not None:
-            exp_info["WEIGHT_ADJUST_LIST"] = _apply_opt_debias_optimizer(
-                exp_info["WEIGHT_ADJUST_LIST"], tuned_optimizer, required=False
             )
         exp_info |= annotations or {}
 
@@ -522,6 +555,39 @@ def build_experiment_plan(config, overrides=None, annotations=None):
         selected_datasets=list(top_level["SELECTED_DATASETS"]),
         experiments=experiments,
     )
+
+
+def resolve_tuned_values(exp_info, values):
+    """
+    Translate the values a sweep tuned for one experiment into the values to
+    write in the tuned hyperparameters file.
+
+    Every value is written as is, except `OPT_DEBIAS_OPTIMIZER`, which only
+    exists as an override: it is written as the experiment's
+    `WEIGHT_ADJUST_LIST` with that optimizer swapped in.
+
+    Parameters
+    ----------
+    exp_info : dict
+        The experiment's `exp_info`, from `build_experiment_plan()`.
+    values : dict<str, object>
+        The tuned values, by sweep parameter name.
+
+    Returns
+    -------
+    values : dict<str, object>
+        The tuned values, by config key.
+    """
+    return {
+        "WEIGHT_ADJUST_LIST" if key == OPT_DEBIAS_OPTIMIZER else key: (
+            _to_list(
+                _apply_opt_debias_optimizer(exp_info["WEIGHT_ADJUST_LIST"], value)
+            )
+            if key == OPT_DEBIAS_OPTIMIZER
+            else value
+        )
+        for key, value in values.items()
+    }
 
 
 def check_tuning(config, plan, allow_untuned=False):

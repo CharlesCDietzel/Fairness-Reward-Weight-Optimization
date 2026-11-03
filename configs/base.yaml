@@ -129,31 +129,21 @@ common:
   DOT_WEIGHTS_FEAT_EXP: true
   N_DATASET_SAMPLES: null
 
-  # The weight adjustments Fairness Reward Weight Optimization learns a policy
-  # for, each in its own W&B run. A run with the unadjusted weights is always
-  # performed first, ahead of every adjustment listed here.
+  # Whether Fairness Reward Weight Optimization runs its `opt_debias` weight
+  # adjustment: optimization-based debiasing of its reward weights, learning a
+  # policy for them in a W&B run of its own. A run with the unadjusted weights
+  # is always performed first; with this off, it is the only one. Each
+  # experiment config turns it on or off.
+  RUN_OPT_DEBIAS: true
+  # The `opt_debias` weight adjustment, as [opt_debias, <library>, <optimizer>,
+  # <evaluation budget>]. The optimizers: optuna GP, SMAC and TPE, and
+  # pybobyqa Multi-Start BOBYQA. Which is best is tuned per dataset, so each
+  # tuned dataset's comes from configs/tuned_hyperparameters.yaml; this one
+  # is for the rest. A sweep tunes it through the OPT_DEBIAS_OPTIMIZER
+  # override (e.g. `--set OPT_DEBIAS_OPTIMIZER=optuna/TPE`), which swaps the
+  # library and optimizer of the entry here and keeps its budget.
   WEIGHT_ADJUST_LIST:
-    # - [mul_negative_weights, 0.0]
-    # - [mul_negative_weights, 0.1]
-    # - [mul_negative_weights, 0.2]
-    # - [mul_negative_weights, 0.3]
-    # - [mul_negative_weights, 0.4]
-    # - [mul_negative_weights, 0.5]
-    # - [mul_negative_weights, 0.6]
-    # - [mul_negative_weights, 0.7]
-    # - [mul_negative_weights, 0.8]
-    # - [mul_negative_weights, 0.9]
-    # Optimization-based weight debiasing for Fairness Reward Weight
-    # Optimization
-    # Which optimizer is best is tuned per dataset, as OPT_DEBIAS_OPTIMIZER
-    # (e.g. `--set OPT_DEBIAS_OPTIMIZER=optuna/TPE`): it swaps the library and
-    # optimizer of every `opt_debias` entry here and keeps its budget. The
-    # tuned one, from configs/tuned_hyperparameters.yaml, is swapped in the
-    # same way, into whatever `opt_debias` entries an experiment config has.
     - [opt_debias, optuna, GP, 200]
-    # - [opt_debias, optuna, SMAC, 200]
-    # - [opt_debias, optuna, TPE, 200]
-    # - [opt_debias, pybobyqa, Multi-Start BOBYQA, 200]
 
   # The bias types each experiment is run under. The unbiased run is always
   # performed first, then every dataset bias type, then every demo bias type,
