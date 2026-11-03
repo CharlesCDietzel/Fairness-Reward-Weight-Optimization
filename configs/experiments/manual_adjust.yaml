@@ -129,11 +129,56 @@ common:
     - {EqOpp: 2.0}
     # - {TNRPar: 2.0}
   MANUAL_WEIGHT_ADJUST_LIST:
+    - {Acc: 0.1}
     - {Acc: 0.2}
+    - {Acc: 0.3}
+    - {Acc: 0.4}
+    - {Acc: 0.5}
+    - {Acc: 0.6}
+    - {Acc: 0.7}
+    - {Acc: 0.8}
+    - {Acc: 0.9}
+    - {Acc: 1.0}
+    # - {AccPar: 0.1}
     # - {AccPar: 0.2}
+    # - {AccPar: 0.3}
+    # - {AccPar: 0.4}
+    # - {AccPar: 0.5}
+    # - {AccPar: 0.6}
+    # - {AccPar: 0.7}
+    # - {AccPar: 0.8}
+    # - {AccPar: 0.9}
+    # - {AccPar: 1.0}
+    - {DemPar: 0.1}
     - {DemPar: 0.2}
+    - {DemPar: 0.3}
+    - {DemPar: 0.4}
+    - {DemPar: 0.5}
+    - {DemPar: 0.6}
+    - {DemPar: 0.7}
+    - {DemPar: 0.8}
+    - {DemPar: 0.9}
+    - {DemPar: 1.0}
+    - {EqOpp: 0.1}
     - {EqOpp: 0.2}
+    - {EqOpp: 0.3}
+    - {EqOpp: 0.4}
+    - {EqOpp: 0.5}
+    - {EqOpp: 0.6}
+    - {EqOpp: 0.7}
+    - {EqOpp: 0.8}
+    - {EqOpp: 0.9}
+    - {EqOpp: 1.0}
+    # - {TNRPar: 0.1}
     # - {TNRPar: 0.2}
+    # - {TNRPar: 0.3}
+    # - {TNRPar: 0.4}
+    # - {TNRPar: 0.5}
+    # - {TNRPar: 0.6}
+    # - {TNRPar: 0.7}
+    # - {TNRPar: 0.8}
+    # - {TNRPar: 0.9}
+    # - {TNRPar: 1.0}
 
   # Which techniques to train and evaluate. List any combination of the names
   # below. Each listed technique gets its own W&B run per dataset bias type,

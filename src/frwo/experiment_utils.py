@@ -3542,6 +3542,7 @@ def _finalize_trial(
         trial_inputsize,
     )
     summary.update(_expert_demo_losses_summary(exp_info, bias_demos))
+    summary.update(_model_demo_losses_summary(exp_info, bias_demos, results))
     summary.update(_model_feat_loss_summary(exp_info, results))
     run.summary["converged"] = True
     run.summary.update(summary)
@@ -3615,6 +3616,46 @@ def _expert_demo_losses_summary(exp_info, bias_demos):
     for split, (_group_idxs, _raw_demos, raw_demos_feat_loss) in split_groups:
         summary[f"expert_demo_feat_loss_{split}"] = _json_safe(
             np.asarray(raw_demos_feat_loss, dtype=float)
+        )
+    return summary
+
+
+def _model_demo_losses_summary(exp_info, bias_demos, results):
+    """
+    The learned model's per-demonstration losses, ready for a W&B run summary.
+
+    The model's decisions on each split are cut into the same subdominance
+    groups as the expert's (`_expert_demo_losses_summary()`) -- the same rows,
+    in the same order -- and each group is scored on the subdominance metrics
+    as a loss, exactly as `compute_iteration_subdominance()` scores it. Row `i`
+    is so directly comparable with row `i` of `expert_demo_feat_loss_{split}`,
+    which is the comparison subdominance itself is computed from, so that the
+    plots can tell which of the expert's demonstrations the model dominates.
+
+    A demo bias type reuses the unbiased run's groups, so these rows also line
+    up with the unbiased run's `expert_demo_feat_loss_{split}` of the same
+    trial.
+
+    Returns
+    -------
+    summary : dict
+        `model_demo_feat_loss_{split}`: shape (n_groups, n_metrics), for each
+        of the train, val and test splits, its columns in the order of
+        `expert_demo_feat_loss_metrics`.
+    """
+    summary = {}
+    split_groups = (
+        ("train", results.demo_train, bias_demos.subdom_groups_train),
+        ("val", results.demo_val, bias_demos.subdom_groups_val),
+        ("test", results.demo_test, bias_demos.subdom_groups_test),
+    )
+    for split, demo, (group_idxs, _raw_demos, _raw_demos_feat_loss) in split_groups:
+        clf_demos_feat_loss = [
+            compute_relevant_feat_loss(exp_info, clf_demo_group)
+            for clf_demo_group in _subdominance_demo_groups(demo, group_idxs)
+        ]
+        summary[f"model_demo_feat_loss_{split}"] = _json_safe(
+            np.asarray(clf_demos_feat_loss, dtype=float)
         )
     return summary
 
