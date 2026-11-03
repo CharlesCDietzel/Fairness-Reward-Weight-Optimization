@@ -48,7 +48,7 @@ EXPERT_ALGOS:
 common:
   # Whether Fairness Reward Weight Optimization runs its `opt_debias` weight
   # adjustment after its unadjusted run (see configs/base.yaml). Off: only the
-  # unadjusted run.
+  # unadjusted run (and any MANUAL_WEIGHT_ADJUST_LIST runs).
   RUN_OPT_DEBIAS: true
 
   # The bias types each experiment is run under. The unbiased run is always
@@ -114,11 +114,15 @@ common:
     - [demo_corruption_bias, CatBoost, 0.001, gaussian, 1.0]
     # - [demo_corruption_bias, CatBoost, 0.01, gaussian, 1.0]
 
-  # How sum-aggregated subdominance weights the measures above. True gives the
-  # perf metrics half the weight and the fair metrics the other half, however
-  # many of each there are. False gives every individual metric equal weight,
-  # whichever list it is in.
-  REWEIGHT_SUBDOMINANCE_OBJECTIVES: false
+  # Fairness Reward Weight Optimization's training adjustments (see
+  # configs/base.yaml). Keep these empty here: the hyperparameters are tuned
+  # under this config, so set them in an experiment config of their own.
+  ALPHA_ADJUST_LIST:
+    # - {EqOpp: 2.0}
+  SUBDOM_WEIGHT_ADJUST_LIST:
+    # - {Acc: 0.5, DemPar: 2.0}
+  MANUAL_WEIGHT_ADJUST_LIST:
+    # - {DemPar: 0.1}
 
   # Which techniques to train and evaluate. List any combination of the names
   # below. Each listed technique gets its own W&B run per dataset bias type,

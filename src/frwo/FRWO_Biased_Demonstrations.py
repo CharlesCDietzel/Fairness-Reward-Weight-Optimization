@@ -121,6 +121,10 @@ def _run_result_recorder(records):
     """
 
     def record(run, summary):
+        training_adjusts = {
+            record_key: run.config[record_key]
+            for _, record_key in TRAINING_ADJUST_KINDS.values()
+        }
         records[run.id] = {
             "run_id": run.id,
             "ALGORITHM": run.config["ALGORITHM"],
@@ -131,13 +135,15 @@ def _run_result_recorder(records):
             "DATASET_BIAS_TYPE": run.config["DATASET_BIAS_TYPE"],
             "DEMO_BIAS_TYPE": run.config["DEMO_BIAS_TYPE"],
             "WEIGHT_ADJUST": run.config["WEIGHT_ADJUST"],
+            **training_adjusts,
             "TRIAL": run.config["TRIAL"],
             # Whether a sweep trial's objective counts this run: every run but
             # Fairness Reward Weight Optimization's with the unadjusted
-            # weights, which are only its starting point.
+            # weights, which are only its starting point, and its training
+            # adjustments' runs, which deliberately skew what it learns.
             "scored": not (
                 run.config["ALGORITHM"] == ALGORITHM_FRWO
-                and not run.config["WEIGHT_ADJUST"]
+                and (not run.config["WEIGHT_ADJUST"] or any(training_adjusts.values()))
             ),
             "converged": summary is not None,
             "subdominance": (

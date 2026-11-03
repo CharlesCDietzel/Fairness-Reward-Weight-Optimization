@@ -86,12 +86,24 @@ TUPLE_KEYS = (
     "SUBDOMINANCE_FAIR_METRICS_LIST",
 )
 
+# The training adjustments of Fairness Reward Weight Optimization: lists of
+# mappings, from a metric or objective name to its value. Each mapping is
+# converted on load to a tuple of `(name, value)` pairs, in the order written,
+# so that it can be compared with `()` like the bias types and weight
+# adjustments.
+TRAINING_ADJUST_LIST_KEYS = (
+    "ALPHA_ADJUST_LIST",
+    "SUBDOM_WEIGHT_ADJUST_LIST",
+    "MANUAL_WEIGHT_ADJUST_LIST",
+)
+
 # List-valued keys that may be left empty. With every entry commented out, YAML
 # reads such a key as null rather than as an empty list, so null is read as
 # empty.
 EMPTYABLE_LIST_KEYS = (
     "DATASET_BIAS_TYPE_LIST",
     "DEMO_BIAS_TYPE_LIST",
+    *TRAINING_ADJUST_LIST_KEYS,
 )
 
 # An override that is not itself an `exp_info` key: `"<library>/<optimizer>"`,
@@ -263,12 +275,19 @@ def tuning_fingerprint(exp_info, tunable=None):
     A fingerprint of the settings of an experiment that hyperparameters tuned
     on it depend on: all of them, except which techniques it runs, which config
     it came from, whether it runs the `opt_debias` weight adjustment (a sweep
-    of Fairness Reward Weight Optimization always does) and the tunable
+    of Fairness Reward Weight Optimization always does), its training
+    adjustments (which only add runs a sweep does not score) and the tunable
     hyperparameters themselves.
     """
     if tunable is None:
         tunable = tunable_keys()
-    excluded = {"ALGORITHMS", CONFIG_NAME, OPT_DEBIAS_OPTIMIZER, RUN_OPT_DEBIAS}
+    excluded = {
+        "ALGORITHMS",
+        CONFIG_NAME,
+        OPT_DEBIAS_OPTIMIZER,
+        RUN_OPT_DEBIAS,
+        *TRAINING_ADJUST_LIST_KEYS,
+    }
     excluded |= {key for keys in tunable.values() for key in keys}
     settings = {key: value for key, value in exp_info.items() if key not in excluded}
     text = json.dumps(settings, sort_keys=True, default=list)
@@ -427,6 +446,24 @@ def _to_tuple(value):
     return value
 
 
+def _to_pairs(key, value):
+    """
+    Turn a training adjustment list -- a list of mappings -- into a tuple of
+    tuples of `(name, value)` pairs. See `TRAINING_ADJUST_LIST_KEYS`.
+    """
+    if not isinstance(value, (list, tuple)):
+        raise ValueError(f"{key} must be a list of mappings, got {value!r}.")
+    entries = []
+    for entry in value:
+        if not isinstance(entry, dict):
+            raise ValueError(
+                f"{key} entry {entry!r} must be a mapping from a name to its value,"
+                " e.g. {EqOpp: 2.0}."
+            )
+        entries.append(tuple(entry.items()))
+    return tuple(entries)
+
+
 def parse_assignment(text):
     """
     Parse one `KEY=VALUE` command line assignment.
@@ -532,6 +569,9 @@ def build_experiment_plan(config, overrides=None, annotations=None):
         for key in TUPLE_KEYS:
             if key in exp_info:
                 exp_info[key] = _to_tuple(exp_info[key])
+        for key in TRAINING_ADJUST_LIST_KEYS:
+            if key in exp_info:
+                exp_info[key] = _to_pairs(key, exp_info[key])
         if optimizer_override is not None:
             exp_info["WEIGHT_ADJUST_LIST"] = _apply_opt_debias_optimizer(
                 exp_info["WEIGHT_ADJUST_LIST"], optimizer_override

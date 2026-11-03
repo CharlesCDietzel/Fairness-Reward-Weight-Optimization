@@ -132,8 +132,9 @@ common:
   # Whether Fairness Reward Weight Optimization runs its `opt_debias` weight
   # adjustment: optimization-based debiasing of its reward weights, learning a
   # policy for them in a W&B run of its own. A run with the unadjusted weights
-  # is always performed first; with this off, it is the only one. Each
-  # experiment config turns it on or off.
+  # is always performed first; with this off, it is the only one (besides
+  # those of MANUAL_WEIGHT_ADJUST_LIST below). Each experiment config turns it
+  # on or off.
   RUN_OPT_DEBIAS: true
   # The `opt_debias` weight adjustment, as [opt_debias, <library>, <optimizer>,
   # <evaluation budget>]. The optimizers: optuna GP, SMAC and TPE, and
@@ -144,6 +145,41 @@ common:
   # library and optimizer of the entry here and keeps its budget.
   WEIGHT_ADJUST_LIST:
     - [opt_debias, optuna, GP, 200]
+
+  # Training adjustments: deliberate skews of how Fairness Reward Weight
+  # Optimization learns its reward weights, each run on its own in a W&B run of
+  # its own, never combined with another. (Not to be confused with
+  # WEIGHT_ADJUST_LIST above, which picks the `opt_debias` optimizer.) Each
+  # entry is a mapping from a name to its value; a name left out is not
+  # adjusted. The other techniques are unaffected.
+  #
+  # ALPHA_ADJUST_LIST and SUBDOM_WEIGHT_ADJUST_LIST skew the subdominance the
+  # `opt_debias` weight search minimizes, and each entry is run as an
+  # `opt_debias` run of its own after the unskewed one, per `opt_debias` entry
+  # of WEIGHT_ADJUST_LIST. They need RUN_OPT_DEBIAS. Their names are those of
+  # SUBDOMINANCE_PERF_METRICS_LIST and SUBDOMINANCE_FAIR_METRICS_LIST, and
+  # their values multipliers (>= 0). They do not change the subdominance
+  # reported as a result.
+  #   ALPHA_ADJUST_LIST multiplies each metric's `alpha` scaling of
+  #       subdominance (see `compute_alphas()`), which makes the metric's
+  #       subdominance steeper but also stops crediting a policy for beating
+  #       the demonstrations on it sooner. 0 makes the metric's subdominance a
+  #       constant 1.
+  #   SUBDOM_WEIGHT_ADJUST_LIST multiplies each metric's weight in
+  #       sum-aggregated subdominance (otherwise equal). 0 leaves the metric
+  #       out.
+  # MANUAL_WEIGHT_ADJUST_LIST adds a term to each named reward weight of the
+  #   L1 normalized weights an `opt_debias` run learned -- or, with
+  #   RUN_OPT_DEBIAS off, of the unadjusted weights -- and L1 normalizes the
+  #   result again (if every weight comes out 0, they are all set to 1 first).
+  #   It learns a policy for those weights without optimizing again. Its names
+  #   are those of FEAT_EXP_OBJECTIVE_NAMES.
+  ALPHA_ADJUST_LIST:
+    # - {EqOpp: 2.0}
+  SUBDOM_WEIGHT_ADJUST_LIST:
+    # - {Acc: 0.5, DemPar: 2.0}
+  MANUAL_WEIGHT_ADJUST_LIST:
+    # - {DemPar: 0.1}
 
   # The bias types each experiment is run under. The unbiased run is always
   # performed first, then every dataset bias type, then every demo bias type,
@@ -228,16 +264,13 @@ common:
   #
   # Several of the two overlap exactly -- "inacc" is "Acc", "dp" is "DemPar",
   # "fpr" is "TNRPar", "eqopp" and "fnr" are "EqOpp" -- while "prp" and
-  # "error_rate_diff" have no objective equivalent. The split between the two
-  # lists only sets the weighting of sum-aggregated subdominance, per
-  # REWEIGHT_SUBDOMINANCE_OBJECTIVES below.
+  # "error_rate_diff" have no objective equivalent. Which of the two lists a
+  # metric is in only sets its order (the perf metrics come first):
+  # sum-aggregated subdominance gives every metric equal weight, unless a run
+  # of SUBDOM_WEIGHT_ADJUST_LIST skews the weighting its `opt_debias` weight
+  # search minimizes.
   SUBDOMINANCE_PERF_METRICS_LIST: [Acc]
   SUBDOMINANCE_FAIR_METRICS_LIST: [AccPar, DemPar, EqOpp, TNRPar]
-  # How sum-aggregated subdominance weights the measures above. True gives the
-  # perf metrics half the weight and the fair metrics the other half, however
-  # many of each there are. False gives every individual metric equal weight,
-  # whichever list it is in.
-  REWEIGHT_SUBDOMINANCE_OBJECTIVES: false
 
   # Which techniques to train and evaluate. List any combination of the names
   # below. Each listed technique gets its own W&B run per dataset bias type,
