@@ -25,8 +25,140 @@ SELECTED_DATASETS:
   # - ACSIncome__AL
   # - ACSIncome__HI
 
+# The experts whose demonstrations are learned from. Every selected experiment
+# is run once per expert. An experiment config may set its own.
+EXPERT_ALGOS:
+  - OptClfMDPPol
+  # A logistic regression post-processed by a fairlearn ThresholdOptimizer,
+  # fit on a class-balanced subsample. It takes its fairness constraint from
+  # SH_DEMO_CONSTRAINTS below.
+  - PostProcDemo
+  # - OptAcc
+  # - CatBoostOptAcc
+  # - XGBoostOptAcc
+  # - HardtDemPar
+  # - HardtEqOpp
+  # - HardtTNRPar
+  # - HardtFPRPar
+  # - HardtFNRPar
+  # - HardtEqOdds
+  # - BoundedGroupLoss
+  # - COMPAS
+
 common:
   # Whether Fairness Reward Weight Optimization runs its `opt_debias` weight
   # adjustment after its unadjusted run (see configs/base.yaml). Off: only the
   # unadjusted run.
   RUN_OPT_DEBIAS: true
+
+  # The bias types each experiment is run under. The unbiased run is always
+  # performed first, then every dataset bias type, then every demo bias type,
+  # each on its own: a dataset bias type with the expert's demonstrations
+  # otherwise unbiased, a demo bias type on the unbiased dataset.
+  #
+  # Dataset bias types bias the dataset itself before it is split, so the
+  # expert learns from it and everything is scored against it:
+  #   [dataset_unbalanced_redlining, percent]
+  #       Sets the "bad" outcome for `percent` of the redlined group (z = 0).
+  #   [dataset_balanced_redlining, percent]
+  #       As above, and sets the "good" outcome for an equal number of the
+  #       other group.
+  #   [dataset_perfectly_balanced_redlining, percent]
+  #       Flips `percent` of the redlined group's "good" outcomes to "bad",
+  #       and an equal number of the other group's "bad" outcomes to "good".
+  #   [dataset_noise_bias, noise_ratio, label_noise, protected_noise]
+  #       Like `add_noise_new()` of the Superhuman Fairness reference
+  #       implementation: flips the labels (if label_noise) of a random
+  #       noise_ratio of the rows, and the protected attribute z (if
+  #       protected_noise) of another, independent random noise_ratio of them.
+  #   [dataset_corruption_bias, clf_type, percent, noise_type, magnitude]
+  #       Relabels the dataset with a classifier whose learned parameters were
+  #       corrupted.
+  # (Each "percent" defaults to 0.2 if left out.)
+  #
+  # To run no bias types of a variety, comment out all of its entries (or
+  # write `[]` with no entries below it).
+  DATASET_BIAS_TYPE_LIST:
+    # - [dataset_unbalanced_redlining, 0.2]
+    # - [dataset_balanced_redlining, 0.2]
+    # - [dataset_perfectly_balanced_redlining, 0.2]
+    # - [dataset_noise_bias, 0.2, true, true]
+    # - [dataset_corruption_bias, CatBoost, 0.0001, gaussian, 1.0]
+    # - [dataset_corruption_bias, CatBoost, 0.001, gaussian, 1.0]
+    # - [dataset_corruption_bias, CatBoost, 0.01, gaussian, 1.0]
+
+  # Demo bias types leave the dataset's labels unchanged and bias the
+  # decisions (yhat) the EXPERT_ALGO's demonstrations make instead. They reuse
+  # the unbiased run's demonstrations (and subdominance groups) rather than
+  # refitting the expert, so each differs from the unbiased run by exactly its
+  # bias:
+  #   [demo_unbalanced_redlining, percent]
+  #   [demo_balanced_redlining, percent]
+  #   [demo_perfectly_balanced_redlining, percent]
+  #       The dataset redlining bias types above, applied to yhat instead of y.
+  #   [demo_noise_bias, noise_ratio]
+  #       Like `add_noise()` of the Superhuman Fairness reference
+  #       implementation: flips the decisions of a random noise_ratio of the
+  #       rows.
+  #   [demo_corruption_bias, clf_type, percent, noise_type, magnitude]
+  #       The dataset corruption bias type above, applied to yhat instead of
+  #       y: relabels the decisions with a classifier that was fit to imitate
+  #       the expert and whose learned parameters were then corrupted. One
+  #       corrupted classifier biases the train, validation and test splits.
+  DEMO_BIAS_TYPE_LIST:
+    # - [demo_unbalanced_redlining, 0.2]
+    # - [demo_balanced_redlining, 0.2]
+    # - [demo_perfectly_balanced_redlining, 0.2]
+    - [demo_noise_bias, 0.2]
+    # - [demo_corruption_bias, CatBoost, 0.0001, gaussian, 1.0]
+    - [demo_corruption_bias, CatBoost, 0.001, gaussian, 1.0]
+    # - [demo_corruption_bias, CatBoost, 0.01, gaussian, 1.0]
+
+  # How sum-aggregated subdominance weights the measures above. True gives the
+  # perf metrics half the weight and the fair metrics the other half, however
+  # many of each there are. False gives every individual metric equal weight,
+  # whichever list it is in.
+  REWEIGHT_SUBDOMINANCE_OBJECTIVES: false
+
+  # Which techniques to train and evaluate. List any combination of the names
+  # below. Each listed technique gets its own W&B run per dataset bias type,
+  # produced by the same evaluation code on the same data split, so that their
+  # metrics are directly comparable.
+  #
+  # The eight after FRWO are the Superhuman Fairness technique, three
+  # variants of it, and the fair-classification baselines that paper compares
+  # itself against:
+  #   "Superhuman Fairness Fixed"
+  #       Superhuman Fairness with the normalization of its gradient's
+  #       feature-matching term fixed, so that it learns from the
+  #       demonstration-specific signal instead of drifting toward predicting
+  #       every label 0. It shares every SH_* setting below except its own
+  #       SH_FIXED_ITERS, SH_FIXED_LR_THETA and SH_FIXED_LAMDA.
+  #   "Superhuman Fairness Neural Network"
+  #       The neural network version of Superhuman Fairness, from the
+  #       reference implementation's `reorg_current` branch. It shares the
+  #       SH_* settings below except its own SH_NN_* ones. It needs PyTorch,
+  #       and trains on a GPU when PyTorch can see one.
+  #   "Superhuman Fairness Neural Network Fixed"
+  #       Superhuman Fairness Neural Network with its training loss fixed:
+  #       centered on the demonstrations' mean subdominance, so it no longer
+  #       drifts toward predicting every label 0, and built from the sampled
+  #       decisions, so its gradient learns which decisions beat the
+  #       demonstrations. It has its own SH_NN_FIXED_* counterpart of every
+  #       SH_NN_* setting.
+  #   "Post Proc DP" / "Post Proc EqOdds"
+  #       The post-processing model of Hardt et al. (2016), with demographic
+  #       parity / equalized odds as the fairness constraint.
+  #   "Fair LogLoss DP" / "Fair LogLoss EqOdds"
+  #       The robust fair-log-loss model of Rezaei et al. (2020), with
+  #       demographic parity / equalized odds as the fairness constraint.
+  ALGORITHMS:
+    - Fairness Reward Weight Optimization
+    - Superhuman Fairness
+    - Superhuman Fairness Fixed
+    - Superhuman Fairness Neural Network
+    - Superhuman Fairness Neural Network Fixed
+    - Post Proc DP
+    - Post Proc EqOdds
+    - Fair LogLoss DP
+    - Fair LogLoss EqOdds
