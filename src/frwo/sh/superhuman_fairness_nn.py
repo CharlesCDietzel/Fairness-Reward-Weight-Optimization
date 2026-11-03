@@ -92,7 +92,6 @@ from frwo.sh.superhuman_fairness import (
     SH_BASE_MODEL_TRAIN_FRAC,
     SH_DEFAULT_ITERS,
     SH_DEFAULT_LAMDA,
-    SH_SPLIT_RANDOM_STATE,
     SuperhumanTrainingHistory,
     compute_alphas,
 )
@@ -187,8 +186,9 @@ class SuperhumanFairnessNN:
     lamda : float, default 0.001
         The `alpha` search tolerance. The original's `lamda`.
     rng : numpy.random.Generator, Optional
-        Source of randomness for the network's initial weights, decision
-        sampling and the order demonstrations are visited in, as for
+        Source of randomness for the half of the data the base model is fit
+        on, the network's initial weights, decision sampling and the order
+        demonstrations are visited in, as for
         `SuperhumanFairness`.
     hidden_nodes : int, default 512
         Width of the first hidden layer; the second is half as wide.
@@ -338,7 +338,9 @@ class SuperhumanFairnessNN:
             X,
             y,
             test_size=1 - SH_BASE_MODEL_TRAIN_FRAC,
-            random_state=SH_SPLIT_RANDOM_STATE,
+            # The original hard-codes 12345; drawn from this model's generator
+            # instead, so that the half differs between trials and restarts.
+            random_state=int(self.rng.integers(0, 2**31 - 1)),
             stratify=y,
         )
 

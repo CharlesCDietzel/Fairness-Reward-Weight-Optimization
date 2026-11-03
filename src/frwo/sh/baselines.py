@@ -62,11 +62,13 @@ BASELINE_LOGI_PARAMS = {
 # The `C` the original passes to every fair log-loss classifier it evaluates.
 FAIR_LOGLOSS_C = 0.005
 
-# The `random_state`s hard-coded in the original's class balancing.
+# The `random_state` hard-coded in the original's class balancing. Only the
+# default here: `PostProcessingBaseline` draws its own from its generator, so
+# that the subsample differs between trials and restarts.
 BALANCE_RANDOM_STATE = 1234
 
 
-def balanced_train_index(X_train, y_train):
+def balanced_train_index(X_train, y_train, random_state=BALANCE_RANDOM_STATE):
     """
     The class-balanced subsample the post-processor is fit on.
 
@@ -77,7 +79,7 @@ def balanced_train_index(X_train, y_train):
     The sample size is clamped to how many `Y=0` rows there actually are, since
     this project's datasets are not all majority-negative the way the
     original's are; on a majority-negative dataset the clamp never binds and
-    this is the original's index exactly.
+    this is the original's index exactly (with the original's `random_state`).
 
     Returns
     -------
@@ -90,7 +92,7 @@ def balanced_train_index(X_train, y_train):
         y_train[y_train == 0]
         .sample(
             n=min(balanced_idx1.size, n_negatives),
-            random_state=BALANCE_RANDOM_STATE,
+            random_state=random_state,
         )
         .index
     )
@@ -102,6 +104,7 @@ def fit_post_processing_model(
     feature_types,
     constraints="demographic_parity",
     logi_params=None,
+    balance_random_state=BALANCE_RANDOM_STATE,
 ):
     """
     Fit the post-processing model of Hardt et al. (2016).
@@ -124,6 +127,8 @@ def fit_post_processing_model(
         baselines use "demographic_parity" and "equalized_odds".
     logi_params : dict, Optional
         Defaults to `BASELINE_LOGI_PARAMS`.
+    balance_random_state : int, default BALANCE_RANDOM_STATE
+        Draws the class-balanced subsample (see `balanced_train_index()`).
 
     Returns
     -------
@@ -146,7 +151,7 @@ def fit_post_processing_model(
         prefit=True,
     )
 
-    pp_train_idx = balanced_train_index(X_train, y_train)
+    pp_train_idx = balanced_train_index(X_train, y_train, balance_random_state)
     X_train_balanced = X_train.loc[pp_train_idx, :]
     y_train_balanced = y_train.loc[pp_train_idx]
 
@@ -176,7 +181,8 @@ class PostProcessingBaseline:
     logi_params : dict, Optional
         Parameters of the underlying logistic regression.
     rng : numpy.random.Generator, Optional
-        Source of the randomization the `ThresholdOptimizer` applies when it
+        Source of this model's randomness: the class-balanced subsample it is
+        fit on, and the randomization the `ThresholdOptimizer` applies when it
         predicts. A dedicated generator is used (rather than the global numpy
         random state) so that enabling this baseline cannot shift the random
         draws of the FRWO technique running alongside it.
@@ -206,6 +212,7 @@ class PostProcessingBaseline:
             feature_types=self.feature_types,
             constraints=self.constraints,
             logi_params=self.logi_params,
+            balance_random_state=int(self.rng.integers(0, 2**31 - 1)),
         )
         return self
 
@@ -270,6 +277,9 @@ class FairLogLossBaseline:
     model_ : frwo.sh.fair_logloss.fair_logloss_classifier
     preprocessor_ : sklearn.compose.ColumnTransformer
         This project's preprocessing, fit on the training split.
+    training_loss_ : float
+        The objective the classifier minimized, at the `theta` it ended at, on
+        the training data. Restarts of this baseline are compared on it.
     """
 
     def __init__(
@@ -293,6 +303,7 @@ class FairLogLossBaseline:
 
         self.model_ = None
         self.preprocessor_ = None
+        self.training_loss_ = None
 
     def _design(self, X):
         return np.asarray(self.preprocessor_.transform(X), dtype=float)
@@ -332,6 +343,12 @@ class FairLogLossBaseline:
         finally:
             np.random.set_state(state)
 
+        # The vendored `fit()` minimizes `compute_loss_grad()` on the design
+        # matrix with an intercept column appended, and keeps only `theta`.
+        design_intercept = np.hstack((design, np.ones((len(design), 1))))
+        self.training_loss_ = float(
+            self.model_.compute_loss_grad(self.model_.theta, design_intercept, y_values)[0]
+        )
         return self
 
     def predict(self, X, y=None):

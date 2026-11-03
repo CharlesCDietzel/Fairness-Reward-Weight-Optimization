@@ -280,7 +280,7 @@ class UnfairNoisyClassifier:
         return preds
 
 
-def generate_expert_algo_lookup(feature_types, exp_info=None):
+def generate_expert_algo_lookup(feature_types, exp_info=None, trial_i=0):
     """
     Parameters
     ----------
@@ -291,6 +291,9 @@ def generate_expert_algo_lookup(feature_types, exp_info=None):
         Experiment parameters. Only the `"PostProcDemo"` expert reads them --
         for its fairness constraint and its random seed -- so leaving this out
         builds that expert with the defaults of `SH_DEFAULTS`.
+    trial_i : int, default 0
+        The trial the experts demonstrate in, which the `"PostProcDemo"`
+        expert's random seed is derived from.
 
     Returns
     -------
@@ -746,12 +749,14 @@ def generate_expert_algo_lookup(feature_types, exp_info=None):
     #
     # Unlike the `Hardt*` experts, whose ThresholdOptimizers draw their
     # prediction-time randomization from the global numpy random state, this
-    # one draws from a generator seeded from the experiment's own
-    # `RANDOM_SEED`, so its demonstrations are reproducible.
+    # one draws from a generator seeded for the trial (see `_derived_seed()`),
+    # so its demonstrations are reproducible and yet differ between trials.
     post_proc_demo_expert = PostProcessingBaseline(
         feature_types=feature_types,
         constraints=_superhuman_config(exp_info)["SH_DEMO_CONSTRAINTS"],
-        rng=np.random.default_rng(_baseline_seed(exp_info, "PostProcDemo", (), 0)),
+        rng=np.random.default_rng(
+            _derived_seed(exp_info, "expert", "PostProcDemo", trial_i, bits=64)
+        ),
     )
 
     # OptClfMDPPol: optimal classifier policy (see compute_optimal_policy() in
@@ -1068,33 +1073,99 @@ def _superhuman_config(exp_info):
     }
 
 
-def _baseline_seed(exp_info, algorithm, bias_type, trial_i):
+# How the experiment's randomness is seeded
+#
+# Every random draw that is not on the global numpy and `random` generators
+# draws from a seed derived from the experiment (`RANDOM_SEED`, its name and
+# dataset) and from what the draw is for, by `_derived_seed()`. A seed never
+# depends on the order things run in, so the experiment is reproducible, can be
+# paused and resumed, and enabling one technique cannot shift another's draws.
+#
+# A seed depends on the trial, so that each trial's draws differ and the
+# results converge to a meaningful average over the trials. It never depends on
+# the conditions an experiment compares -- the expert, the bias type, the
+# training adjustment, or which `opt_debias` optimizer is used -- so that the
+# runs compared within a trial share their random numbers, and differ only by
+# what is being compared (common random numbers).
+#
+# Every technique whose training is random is run N_RESTARTS times per run,
+# each restart from a seed of its own, and keeps the restart that did best on
+# its own training objective (never on validation or test data); see
+# `n_restarts()`. Restart `r` has the same seed in every run of a trial, so the
+# compared runs stay paired restart by restart.
+
+
+def _derived_key(exp_info, *parts):
+    """The string `_derived_seed()` hashes: the experiment's identity, then
+    `parts`."""
+    return "|".join(
+        [
+            str(exp_info.get("RANDOM_SEED")),
+            str(exp_info.get("EXPERIMENT_NAME")),
+            str(exp_info.get("DATASET")),
+            *(str(part) for part in parts),
+        ]
+    )
+
+
+def _derived_seed(exp_info, *parts, bits=32):
+    """A deterministic `bits`-bit seed for the draws `parts` describe. See the
+    comment above."""
+    key = _derived_key(exp_info, *parts)
+    return int.from_bytes(hashlib.blake2b(key.encode(), digest_size=bits // 8).digest(), "big")
+
+
+def n_restarts(exp_info):
+    """How many times each technique with random training is run per run
+    (N_RESTARTS, at least 1)."""
+    restarts = exp_info.get("N_RESTARTS")
+    if restarts is None:
+        return 1
+    if isinstance(restarts, bool) or not isinstance(restarts, int) or restarts < 1:
+        raise ValueError(f"N_RESTARTS must be a positive integer, not {restarts!r}.")
+    return restarts
+
+
+def _baseline_seed(exp_info, algorithm, trial_i, restart=0):
     """
-    Derive a baseline's random seed from what makes its run unique.
+    The random seed of one restart of a baseline technique in one trial.
 
     Every baseline gets its own deterministic seed rather than drawing from the
     global numpy random state. That way enabling a baseline cannot shift a
     single random draw the FRWO technique makes, so a session that runs
     several techniques produces exactly the FRWO results a session that runs
     only FRWO would -- and each baseline is itself reproducible.
+
+    Like every derived seed, it leaves out the expert and the bias type, so that
+    a baseline's runs of one trial are paired across them.
     """
-    key = "|".join(
-        [
-            str(exp_info.get("RANDOM_SEED")),
-            str(exp_info.get("EXPERIMENT_NAME")),
-            str(exp_info.get("DATASET")),
-            str(exp_info.get("EXPERT_ALGO")),
-            str(algorithm),
-            bias_type_name(bias_type),
-            str(trial_i),
-        ]
-    )
-    return int.from_bytes(hashlib.blake2b(key.encode(), digest_size=8).digest(), "big")
+    return _derived_seed(exp_info, "baseline", algorithm, trial_i, restart, bits=64)
 
 
-def _baseline_rng(exp_info, algorithm, bias_type, trial_i):
+def _baseline_rng(exp_info, algorithm, trial_i, restart=0):
     """The random generator one baseline draws from. See `_baseline_seed()`."""
-    return np.random.default_rng(_baseline_seed(exp_info, algorithm, bias_type, trial_i))
+    return np.random.default_rng(_baseline_seed(exp_info, algorithm, trial_i, restart))
+
+
+def _opt_debias_seed(exp_info, trial_i, restart):
+    """The seed of one restart of FRWO's `opt_debias` weight search in one
+    trial, the same for every run of the trial (see the comment above)."""
+    return _derived_seed(exp_info, "opt_debias", trial_i, restart)
+
+
+def _record_restarts(run, criterion, seeds, objectives, selected):
+    """Store in `run`'s summary how a run's restarts went: the seed and
+    training objective of each, which was kept, and by which criterion."""
+    if run is None:
+        return
+    run.summary["restart/n"] = len(seeds)
+    run.summary["restart/selected"] = selected
+    run.summary["restart/criterion"] = criterion
+    for restart, (seed, objective) in enumerate(zip(seeds, objectives)):
+        # As a string: a 64-bit seed is too large for a W&B number
+        run.summary[f"restart/{restart}/seed"] = str(seed)
+        if np.isfinite(objective):
+            run.summary[f"restart/{restart}/objective"] = float(objective)
 
 
 def _json_safe(value):
@@ -2281,17 +2352,8 @@ def _data_split_seed(exp_info, trial_i):
     every expert of a trial is split along the same indices, so the experts
     are compared on the same data.
     """
-    key = "|".join(
-        [
-            str(exp_info.get("RANDOM_SEED")),
-            str(exp_info.get("EXPERIMENT_NAME")),
-            str(exp_info.get("DATASET")),
-            "data_split",
-            str(trial_i),
-        ]
-    )
     # `np.random.RandomState` takes 32-bit seeds.
-    return int.from_bytes(hashlib.blake2b(key.encode(), digest_size=4).digest(), "big")
+    return _derived_seed(exp_info, "data_split", trial_i)
 
 
 @contextlib.contextmanager
@@ -2324,16 +2386,8 @@ def _bias_type_random_state(exp_info, bias_type, trial_i, stage):
         yield
         return
 
-    key = "|".join(
-        [
-            str(exp_info.get("RANDOM_SEED")),
-            str(exp_info.get("EXPERIMENT_NAME")),
-            str(exp_info.get("DATASET")),
-            "bias_type",
-            bias_type_name(bias_type),
-            stage,
-            str(trial_i),
-        ]
+    key = _derived_key(
+        exp_info, "bias_type", bias_type_name(bias_type), stage, trial_i
     )
     with _seeded_global_random_state(key):
         yield
@@ -2353,17 +2407,13 @@ def _training_adjust_random_state(
     training adjustment were listed, and each training adjustment's run
     independent of which others are.
     """
-    key = "|".join(
-        [
-            str(exp_info.get("RANDOM_SEED")),
-            str(exp_info.get("EXPERIMENT_NAME")),
-            str(exp_info.get("DATASET")),
-            "training_adjust",
-            bias_type_name(bias_type),
-            weight_adjusts_name(weight_adjust),
-            training_adjust_name(training_adjust),
-            str(trial_i),
-        ]
+    key = _derived_key(
+        exp_info,
+        "training_adjust",
+        bias_type_name(bias_type),
+        weight_adjusts_name(weight_adjust),
+        training_adjust_name(training_adjust),
+        trial_i,
     )
     with _seeded_global_random_state(key):
         yield
@@ -2934,11 +2984,13 @@ def _apply_weight_adjustments(
     can_observe_y,
     subdom_groups,
     run=None,
+    trial_i=0,
 ):
     """Apply the weight adjustment `weight_adjust` to wi and return the result.
 
     `weight_adjust` is `()` for the unadjusted weights, or an `opt_debias`
-    entry of `exp_info["WEIGHT_ADJUST_LIST"]`, which optimizes them.
+    entry of `exp_info["WEIGHT_ADJUST_LIST"]`, which optimizes them, from the
+    seeds of trial `trial_i` (see `optimize_weights()`).
 
     `run` is the W&B run of the policy these weights are being learned for, or
     `None` to disable W&B logging. Only `opt_debias` reports anything to it.
@@ -2962,6 +3014,7 @@ def _apply_weight_adjustments(
             optimizer,
             n_steps,
             step_logger=_OptDebiasStepLogger(run),
+            trial_i=trial_i,
         )
     wi = normalize(wi.reshape(1, -1), norm="l1").flatten()
     return wi
@@ -2976,17 +3029,25 @@ class _OptDebiasStepLogger:
     reporting independent of which library and optimizer are used.
 
     In W&B, every `opt_debias_step/` metric is plotted against
-    `opt_debias_step/step`, so each graph holds one point per step.
+    `opt_debias_step/step`, so each graph holds one point per step. The steps of
+    `optimize_weights()`'s restarts follow one another, each step recording
+    its restart as `opt_debias_step/restart`, and the best so far is the best of
+    every restart so far.
     """
 
     def __init__(self, run):
         self.run = run
         self.step = 0
+        self.restart = 0
         self.best_wi = None
         self.best_subdom = np.inf
         if run is not None:
             run.define_metric("opt_debias_step/step")
             run.define_metric("opt_debias_step/*", step_metric="opt_debias_step/step")
+
+    def start_restart(self, restart):
+        """Report the steps that follow as those of restart `restart`."""
+        self.restart = restart
 
     def record(self, wi, subdom):
         """Report one optimizer step.
@@ -3002,7 +3063,7 @@ class _OptDebiasStepLogger:
             self.best_subdom = subdom
             self.best_wi = wi
 
-        logging.info(f"\t\t opt_debias step {self.step}")
+        logging.info(f"\t\t opt_debias step {self.step} (restart {self.restart})")
         logging.info(
             f"\t\t\t current weights \t= {str(np.round(wi, 2)).replace('0.', '.')}"
             f" \t sum_abs_subdominance = {subdom:.5f}"
@@ -3017,6 +3078,7 @@ class _OptDebiasStepLogger:
             self.run.log(
                 {
                     "opt_debias_step/step": self.step,
+                    "opt_debias_step/restart": self.restart,
                     "opt_debias_step/sum_abs_subdominance": subdom,
                     "opt_debias_step/best_sum_abs_subdominance": self.best_subdom,
                 }
@@ -3040,103 +3102,177 @@ def optimize_weights(
     optimizer,
     n_steps,
     step_logger=None,
+    trial_i=0,
 ):
+    """
+    The `opt_debias` weight search: the reward weights whose policy's
+    subdominance (`subdominance_of_weights()`) is lowest.
+
+    The search is run `n_restarts()` times, each of `n_steps` evaluations and
+    from a seed of its own for trial `trial_i` (`_opt_debias_seed()`), and the
+    weights of the restart that reached the lowest subdominance are kept. Only
+    the first restart starts from `wi`; the others start where their own seed
+    puts them, so that they search elsewhere. Restart `r` has the same seed in
+    every run of the trial, whatever its bias type, expert or training
+    adjustment, so that those runs stay paired.
+
+    The restarts are compared on the very objective they minimize -- including
+    any SUBDOM_WEIGHT_ADJUST skew, which choosing on anything else would undo
+    -- which is computed on the training split only. How they went is stored in
+    the summary of `step_logger`'s run (see `_record_restarts()`).
+    """
     # Everything subdominance_of_weights() computes that doesn't depend on the
     # weights, computed once rather than on every one of its n_steps calls.
     prepared = prepare_subdominance_of_weights(
         feat_obj_set, demo_df, clf, x_cols, exp_info, X, can_observe_y
     )
-    if library == "optuna":
-        objective = partial(
-            optuna_objective,
-            feat_obj_set=feat_obj_set,
-            demo_df=demo_df,
-            clf=clf,
-            x_cols=x_cols,
-            exp_info=exp_info,
-            X=X,
-            y=y,
-            can_observe_y=can_observe_y,
-            subdom_groups=subdom_groups,
-            prepared=prepared,
-            step_logger=step_logger,
+    objective_kwargs = dict(
+        feat_obj_set=feat_obj_set,
+        demo_df=demo_df,
+        clf=clf,
+        x_cols=x_cols,
+        exp_info=exp_info,
+        X=X,
+        y=y,
+        can_observe_y=can_observe_y,
+        subdom_groups=subdom_groups,
+        prepared=prepared,
+        step_logger=step_logger,
+    )
+    x0 = np.clip(np.asarray(wi, dtype=float), -1.0, 1.0)
+
+    seeds, objectives, solutions = [], [], []
+    for restart in range(n_restarts(exp_info)):
+        seed_key = _derived_key(exp_info, "opt_debias", trial_i, restart)
+        seed = _opt_debias_seed(exp_info, trial_i, restart)
+        if step_logger is not None:
+            step_logger.start_restart(restart)
+        unnormalized_wi, objective = _search_weights(
+            objective_kwargs,
+            len(feat_obj_set.objectives),
+            library,
+            optimizer,
+            n_steps,
+            seed,
+            seed_key,
+            x0 if restart == 0 else None,
         )
-        n_weights = len(feat_obj_set.objectives)
-        x0 = np.clip(np.asarray(wi, dtype=float), -1.0, 1.0)
-        x0_params = {f"unnormalized_w{j}": float(x0[j]) for j in range(n_weights)}
+        logging.info(
+            f"\t\t opt_debias restart {restart}: sum_abs_subdominance = {objective:.5f}"
+        )
+        seeds.append(seed)
+        objectives.append(objective)
+        solutions.append(unnormalized_wi)
+
+    # The lowest objective; a tie goes to the earliest restart
+    selected = int(np.argmin(objectives))
+    _record_restarts(
+        getattr(step_logger, "run", None),
+        "opt_debias objective (training split)",
+        seeds,
+        objectives,
+        selected,
+    )
+    return normalize(solutions[selected].reshape(1, -1), norm="l1").flatten()
+
+
+def _search_weights(
+    objective_kwargs, n_weights, library, optimizer, n_steps, seed, seed_key, x0
+):
+    """
+    One restart of `optimize_weights()`'s search.
+
+    Parameters
+    ----------
+    objective_kwargs : dict
+        The keyword arguments of `optuna_objective()` and
+        `pybobyqa_objective()`.
+    seed : int
+        The restart's seed, which seeds the optimizer.
+    seed_key : str
+        The key `seed` was derived from (see `_derived_key()`), which seeds the
+        global numpy generator Py-BOBYQA draws from.
+    x0 : numpy.ndarray or None
+        The weights to start from, or None to start where `seed` puts the
+        search.
+
+    Returns
+    -------
+    unnormalized_wi : numpy.ndarray
+        The best weights the search found, not yet normalized.
+    objective : float
+        Their subdominance, i.e. the lowest the search reached.
+    """
+    names = [f"unnormalized_w{j}" for j in range(n_weights)]
+    if library == "optuna":
+        objective = partial(optuna_objective, **objective_kwargs)
+        x0_params = None if x0 is None else dict(zip(names, map(float, x0)))
         if optimizer == "GP":
             sampler = optuna.samplers.GPSampler(
-                seed=exp_info["RANDOM_SEED"],
+                seed=seed,
                 # subdominance_of_weights() always returns the same loss for the
                 # same weights
                 deterministic_objective=True,
             )
         elif optimizer == "TPE":
-            sampler = optuna.samplers.TPESampler(seed=exp_info["RANDOM_SEED"])
+            sampler = optuna.samplers.TPESampler(seed=seed)
         elif optimizer == "SMAC":
-            sampler = make_smac_sampler(x0_params, n_steps, exp_info["RANDOM_SEED"])
+            sampler = make_smac_sampler(names, n_steps, seed, x0_params=x0_params)
         study = optuna.create_study(
             direction="minimize",
             sampler=sampler,
             # optuna.create_study() otherwise generates a random
             # UUID study name (via uuid.uuid4(), independent of
             # any seed), which is a source of non-determinism.
-            study_name=f"opt_debias_{exp_info['RANDOM_SEED']}",
+            study_name=f"opt_debias_{seed}",
         )
-        if optimizer in ("GP", "TPE"):
+        if optimizer in ("GP", "TPE") and x0_params is not None:
             # GPSampler and TPESampler have no x0 parameter; evaluating
             # the initial weights as the first trial gives them the same
             # starting point the other optimizers get.
             study.enqueue_trial(x0_params)
         study.optimize(objective, n_trials=n_steps)
-        unnormalized_wi = np.array(
-            [study.best_params[f"unnormalized_w{j}"] for j in range(n_weights)]
-        )
+        unnormalized_wi = np.array([study.best_params[name] for name in names])
+        return unnormalized_wi, float(study.best_value)
     elif library == "pybobyqa":
-        objective = partial(
-            pybobyqa_objective,
-            feat_obj_set=feat_obj_set,
-            demo_df=demo_df,
-            clf=clf,
-            x_cols=x_cols,
-            exp_info=exp_info,
-            X=X,
-            y=y,
-            can_observe_y=can_observe_y,
-            subdom_groups=subdom_groups,
-            prepared=prepared,
-            step_logger=step_logger,
-        )
-        n_weights = len(feat_obj_set.objectives)
+        objective = partial(pybobyqa_objective, **objective_kwargs)
         lower_bounds = -1.0 * np.ones(n_weights)
         upper_bounds = 1.0 * np.ones(n_weights)
-        x0 = np.clip(np.asarray(wi, dtype=float), lower_bounds, upper_bounds)
+        if x0 is None:
+            x0 = np.random.default_rng(seed).uniform(lower_bounds, upper_bounds)
+        x0 = np.clip(np.asarray(x0, dtype=float), lower_bounds, upper_bounds)
         if optimizer == "Multi-Start BOBYQA":
-            # Py-BOBYQA has no seed parameter of its own; it draws
-            # its multi-start restarts from the global numpy RNG
-            soln = pybobyqa.solve(
-                objective,
-                x0,
-                bounds=(lower_bounds, upper_bounds),
-                seek_global_minimum=True,
-                maxfun=n_steps,
-            )
+            # Py-BOBYQA has no seed parameter of its own; it draws its
+            # multi-start restarts from the global numpy RNG, which is seeded
+            # for this restart (and put back afterwards).
+            with _seeded_global_random_state(seed_key):
+                soln = pybobyqa.solve(
+                    objective,
+                    x0,
+                    bounds=(lower_bounds, upper_bounds),
+                    seek_global_minimum=True,
+                    maxfun=n_steps,
+                )
         unnormalized_wi = np.array(soln.x)
         logging.info(f"unnormalized_wi: {unnormalized_wi}")
-    return normalize(unnormalized_wi.reshape(1, -1), norm="l1").flatten()
+        return unnormalized_wi, float(soln.f)
+    raise ValueError(f"Unknown opt_debias library: {library!r}")
 
 
-def make_smac_sampler(x0_params, n_steps, seed):
+def make_smac_sampler(names, n_steps, seed, x0_params=None):
     """Makes the OptunaHub SMAC sampler for `optimize_weights()`.
 
     Parameters
     ----------
-    x0_params : dict
-        The initial value of each parameter of the study, by name. The search
-        space is these parameters, each in [-1, 1].
+    names : list<str>
+        The parameters of the study. The search space is these parameters,
+        each in [-1, 1].
     n_steps : int
         The number of trials of the study.
     seed : int
+    x0_params : dict, Optional
+        The initial value of each parameter, by name, to make the first trial.
+        None starts where SMAC's own initial design does.
 
     Returns
     -------
@@ -3149,7 +3285,7 @@ def make_smac_sampler(x0_params, n_steps, seed):
     )
     module = optunahub.load_module("samplers/smac_sampler", ref=SMAC_SAMPLER_REF)
     search_space = {
-        name: optuna.distributions.FloatDistribution(-1.0, 1.0) for name in x0_params
+        name: optuna.distributions.FloatDistribution(-1.0, 1.0) for name in names
     }
     # Constructing the sampler replaces the root logger's handlers and level
     # with SMAC's own, and there is no argument to turn that off.
@@ -3172,9 +3308,10 @@ def make_smac_sampler(x0_params, n_steps, seed):
     # result of a trial it was asked for. So this makes the initial weights the
     # first trial SMAC asks for, the same starting point the other optimizers
     # get.
-    sampler.smac._config_selector._initial_design_configs.insert(
-        0, Configuration(sampler._cs, values=x0_params)
-    )
+    if x0_params is not None:
+        sampler.smac._config_selector._initial_design_configs.insert(
+            0, Configuration(sampler._cs, values=x0_params)
+        )
     return sampler
 
 
@@ -3751,6 +3888,24 @@ def _report_run_failure(run, algorithm, error):
             listener(run, None)
 
 
+def _train_subdominance(exp_info, model, bias_demos):
+    """
+    `model`'s sum-aggregated absolute subdominance on the training split,
+    against the expert's subdominance groups there: what the baselines that
+    learn from the demonstrations are trained to minimize, and so what their
+    restarts are compared on. Only the training split is read.
+    """
+    demo = generate_demo(model, bias_demos.X_train, bias_demos.y_train, can_observe_y=False)
+    return float(
+        compute_iteration_subdominance(
+            exp_info,
+            *bias_demos.subdom_groups_train,
+            clf_demo_cur=demo,
+            subdominance_type="sum_abs",
+        )
+    )
+
+
 def _evaluate_and_finalize(
     exp_info,
     run,
@@ -3865,18 +4020,25 @@ def _run_superhuman_trial(
         `_evaluate_and_finalize()`.
     algorithm : str, default ALGORITHM_SUPERHUMAN
         Which of `SUPERHUMAN_VARIANTS` to run.
+
+    The model is trained `n_restarts()` times, each from a seed of its own, and
+    the restart whose model has the lowest subdominance against the
+    demonstrations it imitates -- what Superhuman Fairness is trained to
+    minimize -- on the training split is kept (see `_train_subdominance()`).
     """
     sh_config = _superhuman_config(exp_info)
     variant = SUPERHUMAN_VARIANTS[algorithm]
     feature_names = sh_config["SH_FEATURES"] or subdominance_metric_names(exp_info)
-    # Every variant draws from the generator seeded for Superhuman Fairness, so
-    # that on the same trial the two logistic regression variants start from
-    # exactly the same model, and differ only by the normalization fix and
-    # their own hyperparameters; likewise the two neural network variants
-    # (given the same network settings), which differ only by the loss fix.
-    rng = _baseline_rng(
-        exp_info, ALGORITHM_SUPERHUMAN, bias_demos.bias_type, trial_i
-    )
+    # Every variant draws from the generators seeded for Superhuman Fairness, so
+    # that on the same trial and restart the two logistic regression variants
+    # start from exactly the same model, and differ only by the normalization
+    # fix and their own hyperparameters; likewise the two neural network
+    # variants (given the same network settings), which differ only by the loss
+    # fix.
+    seeds = [
+        _baseline_seed(exp_info, ALGORITHM_SUPERHUMAN, trial_i, restart)
+        for restart in range(n_restarts(exp_info))
+    ]
 
     with start_wandb_run(
         exp_info,
@@ -3911,20 +4073,31 @@ def _run_superhuman_trial(
                 f" features {list(feature_names)}"
             )
 
-            logging.info(f"Training {algorithm}...")
-            sh_model = variant["build"](
-                {
-                    "feature_types": feature_types,
-                    "feature_names": feature_names,
-                    "loss_fn": loss_fn,
-                    "lr_theta": sh_config[variant["lr_theta"]],
-                    "iters": sh_config[variant["iters"]],
-                    "lamda": sh_config[variant["lamda"]],
-                    "rng": rng,
-                },
-                sh_config,
+            models, objectives = [], []
+            for restart, seed in enumerate(seeds):
+                logging.info(f"Training {algorithm} (restart {restart})...")
+                sh_model = variant["build"](
+                    {
+                        "feature_types": feature_types,
+                        "feature_names": feature_names,
+                        "loss_fn": loss_fn,
+                        "lr_theta": sh_config[variant["lr_theta"]],
+                        "iters": sh_config[variant["iters"]],
+                        "lamda": sh_config[variant["lamda"]],
+                        "rng": np.random.default_rng(seed),
+                    },
+                    sh_config,
+                )
+                sh_model.fit(pool_X, pool_y, demo_list)
+                models.append(sh_model)
+                objectives.append(_train_subdominance(exp_info, sh_model, bias_demos))
+            # The lowest objective; a tie goes to the earliest restart
+            selected = int(np.argmin(objectives))
+            sh_model = models[selected]
+            _record_restarts(
+                run, "subdominance against the demonstrations (training split)",
+                seeds, objectives, selected,
             )
-            sh_model.fit(pool_X, pool_y, demo_list)
 
             _log_superhuman_training(run, sh_model)
 
@@ -4002,8 +4175,9 @@ def _build_baseline_model(exp_info, algorithm, feature_types, seed):
     kwargs = dict(spec["kwargs"])
 
     if spec["builder"] is PostProcessingBaseline:
-        # Only the ThresholdOptimizer's prediction-time randomization needs a
-        # generator; everything else about this baseline is deterministic.
+        # Only the class-balanced subsample it is fit on and the
+        # ThresholdOptimizer's prediction-time randomization need a generator;
+        # everything else about this baseline is deterministic.
         model = PostProcessingBaseline(
             feature_types=feature_types,
             rng=np.random.default_rng(seed),
@@ -4042,9 +4216,24 @@ def _run_baseline_trial(
     split and hands it to `_evaluate_and_finalize()`, which scores it exactly
     the way every other technique here is scored.
 
+    A fair log-loss model that starts from a random `theta` (its RANDOM_INIT)
+    is fit `n_restarts()` times, each from a seed of its own, and the restart
+    with the lowest training loss -- the objective it minimizes -- is kept. The
+    post-processing model is fit once: its fit is deterministic, and its
+    randomness is the randomized prediction that is part of the classifier
+    itself, so choosing among restarts would only pick a lucky draw.
+
     Reports one W&B run.
     """
-    seed = _baseline_seed(exp_info, algorithm, bias_demos.bias_type, trial_i)
+    spec = BASELINE_SPECS[algorithm]
+    restartable = (
+        spec["builder"] is FairLogLossBaseline
+        and _fair_logloss_config(exp_info, spec["config_prefix"])["RANDOM_INIT"]
+    )
+    seeds = [
+        _baseline_seed(exp_info, algorithm, trial_i, restart)
+        for restart in range(n_restarts(exp_info) if restartable else 1)
+    ]
 
     with start_wandb_run(
         exp_info,
@@ -4058,9 +4247,19 @@ def _run_baseline_trial(
         policy_start = datetime.datetime.now()
 
         try:
-            model, model_config = _build_baseline_model(
-                exp_info, algorithm, feature_types, seed
-            )
+            models, objectives = [], []
+            for restart, seed in enumerate(seeds):
+                model, model_config = _build_baseline_model(
+                    exp_info, algorithm, feature_types, seed
+                )
+                logging.info(
+                    f"Training {algorithm} on the training split (restart {restart})..."
+                )
+                model.fit(bias_demos.X_train, bias_demos.y_train)
+                models.append(model)
+                objectives.append(
+                    model.training_loss_ if restartable else np.nan
+                )
             run.config.update(
                 {
                     f"BASELINE_{key.upper()}": _json_safe(value)
@@ -4068,9 +4267,15 @@ def _run_baseline_trial(
                 },
                 allow_val_change=True,
             )
-
-            logging.info(f"Training {algorithm} on the training split...")
-            model.fit(bias_demos.X_train, bias_demos.y_train)
+            if restartable:
+                # The lowest objective; a tie goes to the earliest restart
+                selected = int(np.argmin(objectives))
+                model = models[selected]
+                _record_restarts(
+                    run, "fair log-loss training loss", seeds, objectives, selected
+                )
+            else:
+                _record_restarts(run, "none (deterministic fit)", seeds, objectives, 0)
 
             _evaluate_and_finalize(
                 exp_info,
@@ -4175,6 +4380,7 @@ def run_experiment_trial(
     demo_bias_type_list = tuple(exp_info.get("DEMO_BIAS_TYPE_LIST", ()))
     validate_bias_types(dataset_bias_type_list, demo_bias_type_list)
     validate_training_adjusts(exp_info)
+    n_restarts(exp_info)  # fails now, rather than in the first run, if invalid
     bias_type_list = ((),) + dataset_bias_type_list + demo_bias_type_list
     weight_adjust_list = ((),)
     if exp_info["RUN_OPT_DEBIAS"]:
@@ -4190,7 +4396,7 @@ def run_experiment_trial(
     can_observe_y = "FO" in exp_info["IRL_METHOD"]
     X, y, feature_types = _load_or_generate_dataset(exp_info, X, y, feature_types)
 
-    expert_algo_lookup = generate_expert_algo_lookup(feature_types, exp_info)
+    expert_algo_lookup = generate_expert_algo_lookup(feature_types, exp_info, trial_i)
 
     demos_by_bias_type = _split_dataset_and_generate_expert_demos(
         exp_info,
@@ -4408,6 +4614,7 @@ def _run_frwo_trials(
                     # could switch to bias_demos.subdom_groups_val
                     bias_demos.subdom_groups_train,
                     run=run,
+                    trial_i=trial_i,
                 )
 
             # Learn a policy that maximizes the reward function.

@@ -106,8 +106,6 @@ SH_DEFAULT_ITERS = 30
 SH_DEFAULT_LAMDA = 0.001
 # `alpha` in main.py: the fraction of the data the base model is fit on.
 SH_BASE_MODEL_TRAIN_FRAC = 0.5
-# The `random_state` hard-coded in the original's splits.
-SH_SPLIT_RANDOM_STATE = 12345
 
 
 def compute_alphas(raw_demos_feat_loss, clf_demos_feat_loss, lamda=SH_DEFAULT_LAMDA):
@@ -487,8 +485,8 @@ class SuperhumanFairness:
         Parameters of the logistic regression base model. Defaults to
         `SH_DEFAULT_LOGI_PARAMS`, the original's `logi_params`.
     rng : numpy.random.Generator, Optional
-        Source of randomness for decision sampling. A dedicated generator is
-        used (rather than the global numpy random state) so that enabling this
+        Source of randomness for the half of the data the base model is fit
+        on and for decision sampling. A dedicated generator is used (rather than the global numpy random state) so that enabling this
         baseline cannot shift the random draws of the FRWO technique running
         alongside it.
     fix_normalization : bool, default False
@@ -600,7 +598,9 @@ class SuperhumanFairness:
             X,
             y,
             test_size=1 - SH_BASE_MODEL_TRAIN_FRAC,
-            random_state=SH_SPLIT_RANDOM_STATE,
+            # The original hard-codes 12345; drawn from this model's generator
+            # instead, so that the half differs between trials and restarts.
+            random_state=int(self.rng.integers(0, 2**31 - 1)),
             stratify=y,
         )
 

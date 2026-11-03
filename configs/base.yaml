@@ -124,7 +124,20 @@ common:
   # Fairness baselines' SH_*LAMDA. It does not change the subdominance
   # reported as a result, which always uses lamda = 0.001.
   OPT_DEBIAS_LAMDA: 0.001
+  # TODO: Switch to 3 trials for hyperparameter tuning
+  # TODO: Switch back to 10 trials for final experiments
   N_TRIALS: 3
+  # How many times each technique whose training is random is run in each of
+  # its runs, keeping the run that did best on its own training objective:
+  # Fairness Reward Weight Optimization's `opt_debias` weight search (each
+  # restart a full search of its WEIGHT_ADJUST_LIST budget, kept by its
+  # subdominance), the Superhuman Fairness baselines (kept by their training
+  # subdominance) and the fair log-loss baselines with a random start (kept by
+  # their training loss). The post-processing baselines are fit once: their
+  # fit is deterministic. Each restart draws from a seed of its own, derived
+  # from RANDOM_SEED, the trial and the restart, and shared by every run of
+  # the trial, so the runs a trial compares stay paired.
+  N_RESTARTS: 3
   N_SUBDOMINANCE_GROUPS: 50
   DOT_WEIGHTS_FEAT_EXP: true
   N_DATASET_SAMPLES: null

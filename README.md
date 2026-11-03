@@ -365,6 +365,16 @@ runs are identical to `main.yaml`'s whatever demo bias types it lists, and each
 bias type's results don't depend on which other bias types are listed. A
 dataset bias type can still change which data split is chosen, though.
 
+Every technique whose training is random (FRWO's `opt_debias` weight search,
+the Superhuman Fairness baselines and the fair log-loss baselines) is run
+`N_RESTARTS` times in each of its runs (3 by default, set in the base's
+`common`), and keeps the restart that did best on its own training objective.
+Each trial and restart has a seed of its own, derived from `RANDOM_SEED`, so
+the trials' results average over the techniques' randomness too. Within a
+trial, a seed is the same for every expert, bias type and training
+adjustment, so the runs being compared differ only by what is being compared.
+How a run's restarts went is in its summary, under `restart/`.
+
 The results go to the W&B project `frwo`, or to the project named by the
 `WANDB_PROJECT` environment variable. The script logs a W&B session id when it
 starts and again when it finishes. Every config of one run shares that
@@ -495,7 +505,8 @@ configured with its `ALGORITHM`; the plotting notebook selects one with its
 
 Each baseline draws from its own deterministically seeded random generator
 rather than the global one, so enabling any of them leaves the FRWO results
-bit-identical to a FRWO-only run. A baseline that fails on some split (the
+bit-identical to a FRWO-only run. Like FRWO's, the seed differs between trials
+and restarts but not between the experts and bias types a trial compares. A baseline that fails on some split (the
 fair-log-loss optimizer can) is logged, its run marked `converged = False` --
 which is what the plotting notebook filters on -- and the trial carries on with
 the remaining techniques.
