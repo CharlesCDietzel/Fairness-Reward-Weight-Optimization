@@ -1177,14 +1177,11 @@ def bias_type_name(bias_type):
 # training adjustment, as a `(kind, entry)` pair, where `entry` is one entry of
 # the kind's list: a tuple of `(name, value)` pairs (see
 # `frwo.config.TRAINING_ADJUST_LIST_KEYS`).
-#   "alpha"          multiplies the `alpha` scaling of each subdominance
-#                    metric in the `opt_debias` objective.
 #   "subdom_weight"  multiplies the weight of each subdominance metric in the
 #                    sum aggregation of the `opt_debias` objective.
 #   "manual_weight"  adds a term to each reward weight of the unadjusted
 #                    weights or of those `opt_debias` learned.
 TRAINING_ADJUST_KINDS = {
-    "alpha": ("ALPHA_ADJUST_LIST", "ALPHA_ADJUST"),
     "subdom_weight": ("SUBDOM_WEIGHT_ADJUST_LIST", "SUBDOM_WEIGHT_ADJUST"),
     "manual_weight": ("MANUAL_WEIGHT_ADJUST_LIST", "MANUAL_WEIGHT_ADJUST"),
 }
@@ -1210,7 +1207,8 @@ def training_adjust_name(training_adjust):
     Returns
     -------
     name : str
-        E.g. `"alpha_adjust_EqOpp_2.0"`, or `""` for `NO_TRAINING_ADJUST`.
+        E.g. `"subdom_weight_adjust_EqOpp_2.0"`, or `""` for
+        `NO_TRAINING_ADJUST`.
     """
     kind, entry = training_adjust
     if not entry:
@@ -1233,8 +1231,8 @@ def validate_training_adjusts(exp_info):
     adjustment lists, so that a misconfigured run fails before anything
     expensive is done: that it names only metrics (or, for the manual weight
     adjustments, reward objectives) this experiment has, with finite values,
-    non-negative for the multipliers, and that the adjustments that skew the
-    `opt_debias` objective have an `opt_debias` run to skew.
+    non-negative for the multipliers, and that the adjustment that skews the
+    `opt_debias` objective has an `opt_debias` run to skew.
     """
     metric_names = subdominance_metric_names(exp_info)
     objective_names = list(exp_info["FEAT_EXP_OBJECTIVE_NAMES"])
@@ -1348,7 +1346,7 @@ def start_wandb_run(
     training_adjust : tuple, default NO_TRAINING_ADJUST
         The training adjustment of Fairness Reward Weight Optimization this
         run covers, as a `(kind, entry)` pair. Its entry is recorded as the
-        kind's key of `TRAINING_ADJUST_KINDS` (e.g. `ALPHA_ADJUST`), as a list
+        kind's key of `TRAINING_ADJUST_KINDS` (e.g. `SUBDOM_WEIGHT_ADJUST`), as a list
         of `[name, value]` pairs, and every other kind's key as `[]`.
 
     Returns
@@ -1939,7 +1937,6 @@ def compute_iteration_subdominance(
     clf_demo_cur,
     subdominance_type="all",
     alpha_lamda=SH_DEFAULT_LAMDA,
-    alpha_adjust=(),
     subdom_weight_adjust=(),
 ):
     """Compute the subdominance metric of a learned policy's demos.
@@ -1949,12 +1946,11 @@ def compute_iteration_subdominance(
     default; only Fairness Reward Weight Optimization's `opt_debias` weight
     search passes its own, `OPT_DEBIAS_LAMDA`, for the objective it minimizes.
 
-    `alpha_adjust` and `subdom_weight_adjust` are an entry of
-    ALPHA_ADJUST_LIST and of SUBDOM_WEIGHT_ADJUST_LIST, which multiply the
-    `alpha` scaling and the sum-aggregation weight of the metrics they name.
-    Like `alpha_lamda`, only the `opt_debias` weight search passes them, and
-    only in the runs of those training adjustments; every subdominance reported
-    as a result is unadjusted.
+    `subdom_weight_adjust` is an entry of SUBDOM_WEIGHT_ADJUST_LIST, which
+    multiplies the sum-aggregation weight of the metrics it names. Like
+    `alpha_lamda`, only the `opt_debias` weight search passes it, and only in
+    the runs of that training adjustment; every subdominance reported as a
+    result is unadjusted.
 
     `group_idxs`, `raw_demos` and `raw_demos_feat_loss` come from
     `generate_subdominance_groups()`, which is called once per expert demo set in
@@ -1977,10 +1973,7 @@ def compute_iteration_subdominance(
             for clf_demo_group in clf_demos
         ]
     )
-    metric_names = subdominance_metric_names(exp_info)
-    alphas = compute_alphas(
-        raw_demos_feat_loss, clf_demos_feat_loss, lamda=alpha_lamda
-    ) * _adjust_vector(metric_names, alpha_adjust, 1.0)
+    alphas = compute_alphas(raw_demos_feat_loss, clf_demos_feat_loss, lamda=alpha_lamda)
     metric_weights = subdominance_metric_weights(exp_info, subdom_weight_adjust)
 
     if subdominance_type == "max_abs" or subdominance_type == "all":
@@ -2871,11 +2864,11 @@ def opt_debias_lamda(exp_info):
 
 def opt_debias_training_adjust(exp_info, kind):
     """
-    The entry of the training adjustment of `kind` ("alpha" or
-    "subdom_weight") that skews the `opt_debias` objective, or `()` for none.
+    The entry of the training adjustment of `kind` (only "subdom_weight" skews
+    it) that skews the `opt_debias` objective, or `()` for none.
 
     `exp_info` holds it under the kind's key of `TRAINING_ADJUST_KINDS` (e.g.
-    ALPHA_ADJUST) only in the copy `_run_frwo_policy()` hands the `opt_debias`
+    SUBDOM_WEIGHT_ADJUST) only in the copy `_run_frwo_policy()` hands the `opt_debias`
     weight search of that training adjustment's run, so that nothing else --
     in particular no reported subdominance -- is skewed by it.
     """
@@ -3367,7 +3360,6 @@ def subdominance_of_weights(
         demo,
         subdominance_type="sum_abs",
         alpha_lamda=opt_debias_lamda(exp_info),
-        alpha_adjust=opt_debias_training_adjust(exp_info, "alpha"),
         subdom_weight_adjust=opt_debias_training_adjust(exp_info, "subdom_weight"),
     )
     # lp.disable_by_count()
@@ -4150,8 +4142,7 @@ def run_experiment_trial(
     via `_apply_weight_adjustments()`. Each of those runs, the unadjusted one
     included, is followed by one run per training adjustment of it, from
     exp_info["MANUAL_WEIGHT_ADJUST_LIST"] and, for the `opt_debias` runs,
-    exp_info["ALPHA_ADJUST_LIST"] and exp_info["SUBDOM_WEIGHT_ADJUST_LIST"]
-    (see `_run_frwo_trials()`). The Superhuman
+    exp_info["SUBDOM_WEIGHT_ADJUST_LIST"] (see `_run_frwo_trials()`). The Superhuman
     Fairness baseline and the four fair-classification baselines have no reward
     weights to adjust and so each report a single run per bias type.
 
@@ -4338,8 +4329,8 @@ def _run_frwo_trials(
       * every entry of MANUAL_WEIGHT_ADJUST_LIST, applied to that run's
         weights -- the unadjusted ones, or those an `opt_debias` run learned
         -- without optimizing again;
-      * after an `opt_debias` run only, every entry of ALPHA_ADJUST_LIST and
-        then SUBDOM_WEIGHT_ADJUST_LIST, each an `opt_debias` run of its own,
+      * after an `opt_debias` run only, every entry of
+        SUBDOM_WEIGHT_ADJUST_LIST, each an `opt_debias` run of its own,
         minimizing the subdominance the entry skews.
     Lifted out of `run_experiment_trial()` when the Superhuman Fairness
     baseline was added, so that each technique's trial reads as one block.
@@ -4394,9 +4385,9 @@ def _run_frwo_trials(
                 )
                 run.summary["manual_weight_adjust_base_run_id"] = base_run_id
             else:
-                # An alpha or subdominance weight adjustment skews the
-                # objective of this run's `opt_debias` weight search, and
-                # nothing else (see `opt_debias_training_adjust()`).
+                # A subdominance weight adjustment skews the objective of
+                # this run's `opt_debias` weight search, and nothing else (see
+                # `opt_debias_training_adjust()`).
                 opt_debias_exp_info = exp_info
                 if entry:
                     opt_debias_exp_info = {
@@ -4490,9 +4481,8 @@ def _run_frwo_trials(
         # Every entry of `weight_adjust_list` but `()` is an `opt_debias` one.
         if weight_adjust:
             training_adjust_runs += [
-                ((kind, entry), None)
-                for kind in ("alpha", "subdom_weight")
-                for entry in training_adjusts(exp_info, kind)
+                (("subdom_weight", entry), None)
+                for entry in training_adjusts(exp_info, "subdom_weight")
             ]
         for training_adjust, base in training_adjust_runs:
             logging.info(f"TRAINING ADJUSTMENT: {training_adjust_name(training_adjust)}")

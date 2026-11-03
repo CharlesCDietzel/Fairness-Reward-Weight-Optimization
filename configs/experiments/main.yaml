@@ -116,8 +116,6 @@ common:
 
   # Fairness Reward Weight Optimization's training adjustments (see
   # configs/base.yaml).
-  ALPHA_ADJUST_LIST:
-    # - {EqOpp: 2.0}
   SUBDOM_WEIGHT_ADJUST_LIST:
     # - {Acc: 0.5, DemPar: 2.0}
   MANUAL_WEIGHT_ADJUST_LIST:

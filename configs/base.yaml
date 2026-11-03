@@ -153,29 +153,20 @@ common:
   # entry is a mapping from a name to its value; a name left out is not
   # adjusted. The other techniques are unaffected.
   #
-  # ALPHA_ADJUST_LIST and SUBDOM_WEIGHT_ADJUST_LIST skew the subdominance the
-  # `opt_debias` weight search minimizes, and each entry is run as an
-  # `opt_debias` run of its own after the unskewed one, per `opt_debias` entry
-  # of WEIGHT_ADJUST_LIST. They need RUN_OPT_DEBIAS. Their names are those of
-  # SUBDOMINANCE_PERF_METRICS_LIST and SUBDOMINANCE_FAIR_METRICS_LIST, and
-  # their values multipliers (>= 0). They do not change the subdominance
-  # reported as a result.
-  #   ALPHA_ADJUST_LIST multiplies each metric's `alpha` scaling of
-  #       subdominance (see `compute_alphas()`), which makes the metric's
-  #       subdominance steeper but also stops crediting a policy for beating
-  #       the demonstrations on it sooner. 0 makes the metric's subdominance a
-  #       constant 1.
-  #   SUBDOM_WEIGHT_ADJUST_LIST multiplies each metric's weight in
-  #       sum-aggregated subdominance (otherwise equal). 0 leaves the metric
-  #       out.
+  # SUBDOM_WEIGHT_ADJUST_LIST skews the subdominance the `opt_debias` weight
+  #   search minimizes: it multiplies each metric's weight in sum-aggregated
+  #   subdominance (otherwise equal), and 0 leaves the metric out. Each entry
+  #   is run as an `opt_debias` run of its own after the unskewed one, per
+  #   `opt_debias` entry of WEIGHT_ADJUST_LIST, so it needs RUN_OPT_DEBIAS. Its
+  #   names are those of SUBDOMINANCE_PERF_METRICS_LIST and
+  #   SUBDOMINANCE_FAIR_METRICS_LIST, and its values multipliers (>= 0). It does
+  #   not change the subdominance reported as a result.
   # MANUAL_WEIGHT_ADJUST_LIST adds a term to each named reward weight of the
   #   L1 normalized weights of the unadjusted run and of every `opt_debias`
   #   run, and L1 normalizes the result again (if every weight comes out 0,
   #   they are all set to 1 first). Each entry is run after each of those runs,
   #   learning a policy for its weights without optimizing again. Its names
   #   are those of FEAT_EXP_OBJECTIVE_NAMES.
-  ALPHA_ADJUST_LIST:
-    # - {EqOpp: 2.0}
   SUBDOM_WEIGHT_ADJUST_LIST:
     # - {Acc: 0.5, DemPar: 2.0}
   MANUAL_WEIGHT_ADJUST_LIST:

@@ -92,7 +92,6 @@ TUPLE_KEYS = (
 # so that it can be compared with `()` like the bias types and weight
 # adjustments.
 TRAINING_ADJUST_LIST_KEYS = (
-    "ALPHA_ADJUST_LIST",
     "SUBDOM_WEIGHT_ADJUST_LIST",
     "MANUAL_WEIGHT_ADJUST_LIST",
 )
