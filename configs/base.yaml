@@ -169,10 +169,10 @@ common:
   #       sum-aggregated subdominance (otherwise equal). 0 leaves the metric
   #       out.
   # MANUAL_WEIGHT_ADJUST_LIST adds a term to each named reward weight of the
-  #   L1 normalized weights an `opt_debias` run learned -- or, with
-  #   RUN_OPT_DEBIAS off, of the unadjusted weights -- and L1 normalizes the
-  #   result again (if every weight comes out 0, they are all set to 1 first).
-  #   It learns a policy for those weights without optimizing again. Its names
+  #   L1 normalized weights of the unadjusted run and of every `opt_debias`
+  #   run, and L1 normalizes the result again (if every weight comes out 0,
+  #   they are all set to 1 first). Each entry is run after each of those runs,
+  #   learning a policy for its weights without optimizing again. Its names
   #   are those of FEAT_EXP_OBJECTIVE_NAMES.
   ALPHA_ADJUST_LIST:
     # - {EqOpp: 2.0}

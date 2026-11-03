@@ -1181,7 +1181,8 @@ def bias_type_name(bias_type):
 #                    metric in the `opt_debias` objective.
 #   "subdom_weight"  multiplies the weight of each subdominance metric in the
 #                    sum aggregation of the `opt_debias` objective.
-#   "manual_weight"  adds a term to each reward weight `opt_debias` learned.
+#   "manual_weight"  adds a term to each reward weight of the unadjusted
+#                    weights or of those `opt_debias` learned.
 TRAINING_ADJUST_KINDS = {
     "alpha": ("ALPHA_ADJUST_LIST", "ALPHA_ADJUST"),
     "subdom_weight": ("SUBDOM_WEIGHT_ADJUST_LIST", "SUBDOM_WEIGHT_ADJUST"),
@@ -4105,10 +4106,11 @@ def run_experiment_trial(
     unadjusted weights, then, if exp_info["RUN_OPT_DEBIAS"], one per
     `opt_debias` entry in exp_info["WEIGHT_ADJUST_LIST"] (which is not expected
     to contain "()" itself either), each derived from the unadjusted weights
-    via `_apply_weight_adjustments()`. Each of those is followed by one run per
-    training adjustment of it, from exp_info["ALPHA_ADJUST_LIST"],
-    exp_info["SUBDOM_WEIGHT_ADJUST_LIST"] and
-    exp_info["MANUAL_WEIGHT_ADJUST_LIST"] (see `_run_frwo_trials()`). The Superhuman
+    via `_apply_weight_adjustments()`. Each of those runs, the unadjusted one
+    included, is followed by one run per training adjustment of it, from
+    exp_info["MANUAL_WEIGHT_ADJUST_LIST"] and, for the `opt_debias` runs,
+    exp_info["ALPHA_ADJUST_LIST"] and exp_info["SUBDOM_WEIGHT_ADJUST_LIST"]
+    (see `_run_frwo_trials()`). The Superhuman
     Fairness baseline and the four fair-classification baselines have no reward
     weights to adjust and so each report a single run per bias type.
 
@@ -4292,12 +4294,12 @@ def _run_frwo_trials(
     One W&B run per entry of `weight_adjust_list`, each followed by one per
     training adjustment of it (see `TRAINING_ADJUST_KINDS`), each of those
     adjusting that one run and nothing else:
-      * every entry of MANUAL_WEIGHT_ADJUST_LIST, applied to the weights an
-        `opt_debias` run learned -- or, with RUN_OPT_DEBIAS off, to the
-        unadjusted weights -- without optimizing again;
-      * every entry of ALPHA_ADJUST_LIST and then SUBDOM_WEIGHT_ADJUST_LIST,
-        each an `opt_debias` run of its own, minimizing the subdominance the
-        entry skews.
+      * every entry of MANUAL_WEIGHT_ADJUST_LIST, applied to that run's
+        weights -- the unadjusted ones, or those an `opt_debias` run learned
+        -- without optimizing again;
+      * after an `opt_debias` run only, every entry of ALPHA_ADJUST_LIST and
+        then SUBDOM_WEIGHT_ADJUST_LIST, each an `opt_debias` run of its own,
+        minimizing the subdominance the entry skews.
     Lifted out of `run_experiment_trial()` when the Superhuman Fairness
     baseline was added, so that each technique's trial reads as one block.
     """
@@ -4440,13 +4442,11 @@ def _run_frwo_trials(
     for weight_adjust in weight_adjust_list:
         wi, run_id = run_policy(weight_adjust)
 
+        training_adjust_runs = [
+            (("manual_weight", entry), (wi, run_id))
+            for entry in training_adjusts(exp_info, "manual_weight")
+        ]
         # Every entry of `weight_adjust_list` but `()` is an `opt_debias` one.
-        training_adjust_runs = []
-        if weight_adjust or not exp_info["RUN_OPT_DEBIAS"]:
-            training_adjust_runs += [
-                (("manual_weight", entry), (wi, run_id))
-                for entry in training_adjusts(exp_info, "manual_weight")
-            ]
         if weight_adjust:
             training_adjust_runs += [
                 ((kind, entry), None)
