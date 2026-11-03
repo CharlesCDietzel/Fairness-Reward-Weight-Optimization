@@ -2020,9 +2020,15 @@ def _generate_expert_demonstrations(
 
 
 def _bias_expert_demonstrations(
-    exp_info, unbiased_expert, demo_bias_type, feat_obj_set, perf_obj_set
+    exp_info,
+    unbiased_experts,
+    demo_bias_type,
+    feature_types,
+    feat_obj_set,
+    perf_obj_set,
 ):
-    """Apply a demo bias type to the unbiased expert demonstrations of a split.
+    """Apply a demo bias type to the unbiased expert demonstrations of every
+    split.
 
     The expert is not refit: its unbiased demonstrations are reused and only
     their decisions (`yhat`) are biased, so the demonstrations of a demo bias
@@ -2031,18 +2037,55 @@ def _bias_expert_demonstrations(
     demonstrations, computed as `generate_mu_and_demos()` and
     `_generate_expert_demonstrations()` compute them.
 
+    Most demo bias types bias each split's demonstrations independently.
+    `demo_corruption_bias` instead biases them all together, so that every
+    split is biased by one corrupted expert, as `dataset_corruption_bias`
+    relabels the whole dataset with one corrupted classifier before it is
+    split.
+
+    Parameters
+    ----------
+    unbiased_experts : sequence<ExpertDemos>
+        The unbiased expert demonstrations of each split.
+
     Returns
     -------
-    expert : ExpertDemos
+    experts : list<ExpertDemos>
+        The biased expert demonstrations of each split, in the order of
+        `unbiased_experts`.
     """
-    demo = add_demo_bias(
-        unbiased_expert.demo, demo_bias_type, dataset=exp_info["DATASET"]
-    )
-    return ExpertDemos(
-        mu=np.array([feat_obj_set.compute_demo_feature_exp(demo)]),
-        demo=demo,
-        mu_perf=np.array([perf_obj_set.compute_demo_feature_exp(demo)]),
-    )
+    unbiased_demos = [expert.demo for expert in unbiased_experts]
+    if demo_bias_type[0] == "demo_corruption_bias":
+        # Split the biased demonstrations back apart by position, since the
+        # dataset's index needn't be unique.
+        biased = add_demo_bias(
+            pd.concat(unbiased_demos),
+            demo_bias_type,
+            dataset=exp_info["DATASET"],
+            feature_types=feature_types,
+        )
+        bounds = np.cumsum([0] + [len(demo) for demo in unbiased_demos])
+        demos = [
+            biased.iloc[start:end].copy() for start, end in zip(bounds, bounds[1:])
+        ]
+    else:
+        demos = [
+            add_demo_bias(
+                demo,
+                demo_bias_type,
+                dataset=exp_info["DATASET"],
+                feature_types=feature_types,
+            )
+            for demo in unbiased_demos
+        ]
+    return [
+        ExpertDemos(
+            mu=np.array([feat_obj_set.compute_demo_feature_exp(demo)]),
+            demo=demo,
+            mu_perf=np.array([perf_obj_set.compute_demo_feature_exp(demo)]),
+        )
+        for demo in demos
+    ]
 
 
 def _muE_split_cosine_dist(muE_train, muE_val, muE_test):
@@ -2383,15 +2426,13 @@ def _split_dataset_and_generate_expert_demos(
             # bias.
             unbiased = demos_by_bias_type[0]
             logging.info("Biasing the unbiased expert demonstrations...")
-            expert_train, expert_val, expert_test = (
-                _bias_expert_demonstrations(
-                    exp_info, unbiased_expert, bias_type, feat_obj_set, perf_obj_set
-                )
-                for unbiased_expert in (
-                    unbiased.expert_train,
-                    unbiased.expert_val,
-                    unbiased.expert_test,
-                )
+            expert_train, expert_val, expert_test = _bias_expert_demonstrations(
+                exp_info,
+                (unbiased.expert_train, unbiased.expert_val, unbiased.expert_test),
+                bias_type,
+                feature_types,
+                feat_obj_set,
+                perf_obj_set,
             )
             group_idxs_train, group_idxs_val, group_idxs_test = (
                 unbiased.subdom_groups_train[0],

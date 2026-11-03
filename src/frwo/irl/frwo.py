@@ -304,7 +304,8 @@ def generate_demo(clf, X_test, y_test, can_observe_y=False, yhat=None):
 #
 # The redlining bias types of the two varieties share their implementation,
 # `_apply_redlining()`, applied to the dataset's labels or to the expert's
-# decisions respectively; so do the two noise bias types, `_flip_values()`.
+# decisions respectively; so do the two noise bias types, `_flip_values()`,
+# and the two corruption bias types, `_corrupt_and_relabel()`.
 ##
 
 # The three redlining processes, each available as a dataset and a demo bias
@@ -324,6 +325,7 @@ DATASET_BIAS_TYPES = (
 DEMO_BIAS_TYPES = (
     *(f"demo_{kind}" for kind in REDLINING_KINDS),
     "demo_noise_bias",
+    "demo_corruption_bias",
 )
 
 # The dataset bias types' names before the "dataset_" prefix was introduced,
@@ -360,11 +362,13 @@ def validate_bias_types(dataset_bias_type_list, demo_bias_type_list):
         "dataset_noise_bias": "[dataset_noise_bias, noise_ratio, label_noise, protected_noise]",
         "dataset_corruption_bias": "[dataset_corruption_bias, clf_type, percent, noise_type, magnitude]",
         "demo_noise_bias": "[demo_noise_bias, noise_ratio]",
+        "demo_corruption_bias": "[demo_corruption_bias, clf_type, percent, noise_type, magnitude]",
     }
     n_params = {
         "dataset_noise_bias": 3,
         "dataset_corruption_bias": 4,
         "demo_noise_bias": 1,
+        "demo_corruption_bias": 4,
     }
     for list_name, bias_types, valid in (
         ("DATASET_BIAS_TYPE_LIST", dataset_bias_type_list, DATASET_BIAS_TYPES),
@@ -647,7 +651,7 @@ def add_dataset_bias(X, y, feature_types, dataset_bias_type=(), dataset=None):
     return X, add_redlining_bias(X, y, dataset_bias_type, dataset)
 
 
-def add_demo_bias(demos, demo_bias_type=(), dataset=None):
+def add_demo_bias(demos, demo_bias_type=(), dataset=None, feature_types=None):
     """
     Apply one demo bias type to an expert's demonstrations.
 
@@ -664,6 +668,16 @@ def add_demo_bias(demos, demo_bias_type=(), dataset=None):
         Fairness reference implementation does to its demonstrator's
         predictions, but keeping the demonstrations' own index rather than
         resetting it to 0..n-1.
+    `demo_corruption_bias`
+        `[demo_corruption_bias, clf_type, percent, noise_type, magnitude]`:
+        the dataset bias type `dataset_corruption_bias` with the expert's
+        decisions in place of the labels -- a `clf_type` classifier is fit to
+        imitate `yhat` from the demonstrations' inputs, its parameters are
+        corrupted, and its predictions replace `yhat` wherever the
+        uncorrupted classifier matched it (see `_corrupt_and_relabel()`).
+        Every row of `demos` is relabeled by the same corrupted classifier,
+        so to bias several sets of demonstrations with one corrupted expert,
+        pass them in together.
 
     Dataset bias types, and `()`, leave the demonstrations unchanged.
 
@@ -674,6 +688,9 @@ def add_demo_bias(demos, demo_bias_type=(), dataset=None):
     demo_bias_type : tuple, default ()
     dataset : str
         Name of the dataset, for the redlining bias types.
+    feature_types : dict<str, list>
+        Mapping of column names to their type of feature, for
+        `demo_corruption_bias`.
 
     Returns
     -------
@@ -689,6 +706,15 @@ def add_demo_bias(demos, demo_bias_type=(), dataset=None):
         (noise_ratio,) = demo_bias_type[1:]
         yhat = _flip_values(
             demos["yhat"], _random_fraction_positions(len(demos), noise_ratio)
+        )
+    elif name == "demo_corruption_bias":
+        # The classifier imitates the expert from the inputs the expert saw:
+        # never from the true labels `y`.
+        yhat = _corrupt_and_relabel(
+            demos.drop(columns=["yhat", "y"]),
+            demos["yhat"],
+            feature_types,
+            *demo_bias_type[1:],
         )
     else:
         kind, percent = _redlining_params(demo_bias_type, "demo_")
@@ -854,62 +880,81 @@ def _apply_corruption(params, percent, noise_type, magnitude):
     raise ValueError(f"Unknown noise_type: {noise_type}")
 
 
+def _corrupt_and_relabel(
+    X, target, feature_types, clf_type, percent, noise_type, magnitude
+):
+    """
+    Relabel `target` with the predictions of a classifier whose learned
+    parameters were corrupted.
+
+    The implementation both corruption bias types share: the dataset bias type
+    relabels the dataset's labels `y`, and the demo bias type the expert's
+    decisions `yhat`.
+
+    A `clf_type` classifier is fit on `(X, target)`, a `percent` of its
+    learned parameters are perturbed by `noise_type` noise of the given
+    `magnitude` (see `_apply_corruption()`), and its predictions on `X` replace
+    `target` -- except wherever the uncorrupted classifier already disagreed
+    with `target`, which is kept as is.
+
+    Returns
+    -------
+    target_biased : pandas.Series
+        A copy of `target` with the bias applied, indexed and named like
+        `target`.
+    """
+    clf = _make_corruption_clf(clf_type, feature_types)
+    clf.fit(X, target)
+    unbiased_demo = generate_demo(
+        clf,
+        X,
+        target,
+        can_observe_y=False,
+    )
+    pred_unbiased = pd.Series(
+        unbiased_demo["yhat"].to_numpy(), index=target.index, name=target.name
+    )
+    flat_params = _get_flat_clf_params(clf, clf_type)
+    biased_params = _apply_corruption(flat_params, percent, noise_type, magnitude)
+    biased_clf = _set_flat_clf_params(clf, clf_type, biased_params)
+    demo = generate_demo(
+        biased_clf,
+        X,
+        target,
+        can_observe_y=False,
+    )
+    pred_biased = pd.Series(
+        demo["yhat"].to_numpy(), index=target.index, name=target.name
+    )
+    # We want to preserve any bias that was already present in the original target.
+    # Whenever the original target could not be predicted correctly by the unbiased classifier,
+    # that indicates that the original target was likely already biased. In that case, we want
+    # to keep the original target as is, and not apply the corruption bias.
+    return pred_biased.where(pred_unbiased == target, target)
+
+
 def add_corruption_bias(X, y, feature_types, dataset_bias_type=()):
     """
     Apply the `dataset_corruption_bias` dataset bias type to a dataset's labels.
 
     A classifier is fit on the dataset, its learned parameters are corrupted,
-    and its predictions on the dataset become the biased labels. As with
-    `add_redlining_bias()`, the bias lands on the dataset itself rather than
-    on an expert's predictions, so everything downstream is fit on and scored
-    against the biased labels.
+    and its predictions on the dataset become the biased labels (see
+    `_corrupt_and_relabel()`). As with `add_redlining_bias()`, the bias lands
+    on the dataset itself rather than on an expert's predictions, so
+    everything downstream is fit on and scored against the biased labels.
 
     Returns
     -------
-    y_biased : pandas.Series or None
+    y_biased : pandas.Series
         A copy of `y` with the bias applied, indexed and named like `y`, or
-        `None` if `dataset_bias_type` is not `dataset_corruption_bias`.
+        an unchanged copy if `dataset_bias_type` is not
+        `dataset_corruption_bias`.
     """
-    if len(dataset_bias_type) > 0:
-        dataset_bias_type_name = dataset_bias_type[0]
-    else:
-        dataset_bias_type_name = None
-    if len(dataset_bias_type) > 1:
-        parameters = dataset_bias_type[1:]
-    match dataset_bias_type_name:
-        case "dataset_corruption_bias":
-            clf_type, percent, noise_type, magnitude = parameters
-            clf = _make_corruption_clf(clf_type, feature_types)
-            clf.fit(X, y)
-            unbiased_demo = generate_demo(
-                clf,
-                X,
-                y,
-                can_observe_y=False,
-            )
-            yhat_unbiased = pd.Series(
-                unbiased_demo["yhat"].to_numpy(), index=y.index, name=y.name
-            )
-            flat_params = _get_flat_clf_params(clf, clf_type)
-            biased_params = _apply_corruption(
-                flat_params, percent, noise_type, magnitude
-            )
-            biased_clf = _set_flat_clf_params(clf, clf_type, biased_params)
-            demo = generate_demo(
-                biased_clf,
-                X,
-                y,
-                can_observe_y=False,
-            )
-            yhat_biased = pd.Series(demo["yhat"].to_numpy(), index=y.index, name=y.name)
-            # We want to preserve any bias that was already present in the original labels.
-            # Whenever the original label could not be predicted correctly by the unbiased classifier,
-            # that indicates that the original label was likely already biased. In that case, we want
-            # to keep the original label as is, and not apply the corruption bias.
-            y_biased = yhat_biased.where(yhat_unbiased == y, y)
-        case _:
-            y_biased = y.copy()
-    return y_biased
+    name = dataset_bias_type[0] if dataset_bias_type else None
+    if name != "dataset_corruption_bias":
+        return y.copy()
+
+    return _corrupt_and_relabel(X, y, feature_types, *dataset_bias_type[1:])
 
 
 def generate_non_overfit_demos(

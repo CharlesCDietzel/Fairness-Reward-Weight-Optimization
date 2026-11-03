@@ -202,11 +202,19 @@ common:
   #       Like `add_noise()` of the Superhuman Fairness reference
   #       implementation: flips the decisions of a random noise_ratio of the
   #       rows.
+  #   [demo_corruption_bias, clf_type, percent, noise_type, magnitude]
+  #       The dataset corruption bias type above, applied to yhat instead of
+  #       y: relabels the decisions with a classifier that was fit to imitate
+  #       the expert and whose learned parameters were then corrupted. One
+  #       corrupted classifier biases the train, validation and test splits.
   DEMO_BIAS_TYPE_LIST:
     # - [demo_unbalanced_redlining, 0.2]
     # - [demo_balanced_redlining, 0.2]
     # - [demo_perfectly_balanced_redlining, 0.2]
     # - [demo_noise_bias, 0.2]
+    # - [demo_corruption_bias, CatBoost, 0.0001, gaussian, 1.0]
+    # - [demo_corruption_bias, CatBoost, 0.001, gaussian, 1.0]
+    # - [demo_corruption_bias, CatBoost, 0.01, gaussian, 1.0]
 
   # The performance and fairness measures the subdominance metric is computed
   # over. Fairness Reward Weight Optimization optimizes relative to these: its
