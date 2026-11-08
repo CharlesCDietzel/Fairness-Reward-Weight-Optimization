@@ -5,14 +5,41 @@ import pandas as pd
 
 
 class OptimizationProblem:
+    """
+    One linear program of an MDP: minimize `c @ x` subject to
+    `A_eq @ x == b_eq`, `A_ub @ x <= b_ub` and `x >= 0`.
 
-    def __init__(self, name, c, A_eq=None, b_eq=None, b_ub=None, A_ub=None):
+    Attributes
+    ----------
+    objective_costs : dict<str, numpy.ndarray> or None
+        Each objective's unweighted contribution to `c` in this problem (the
+        cost vector of the one split of it the problem uses), by objective
+        name. With `objective_weights`, lets a solver tell how `c` depends on
+        the reward weights (see `frwo.rl.reduced_lp`).
+    objective_weights : dict<str, float> or None
+        The reward weight of each objective in `objective_costs`, so that
+        `c == sum(objective_weights[k] * objective_costs[k] for k in ...)`.
+    """
+
+    def __init__(
+        self,
+        name,
+        c,
+        A_eq=None,
+        b_eq=None,
+        b_ub=None,
+        A_ub=None,
+        objective_costs=None,
+        objective_weights=None,
+    ):
         self.name = name
         self.c = c
         self.A_eq = A_eq
         self.b_eq = b_eq
         self.b_ub = b_ub
         self.A_ub = A_ub
+        self.objective_costs = objective_costs
+        self.objective_weights = objective_weights
 
 
 class ObjectiveSplit:
@@ -2001,9 +2028,15 @@ class ObjectiveSet:
 
             c_len = np.asarray(all_splits[0].c, dtype=float).shape[0]
             c = np.zeros(c_len, dtype=float)
+            objective_costs = {}
             for split in all_splits:
-                c = c + reward_weights[split.parent.name] * np.asarray(
-                    split.c, dtype=float
+                split_c = np.asarray(split.c, dtype=float)
+                c = c + reward_weights[split.parent.name] * split_c
+                parent = split.parent.name
+                objective_costs[parent] = (
+                    objective_costs[parent] + split_c
+                    if parent in objective_costs
+                    else split_c
                 )
 
             opt_problem = OptimizationProblem(
@@ -2013,6 +2046,10 @@ class ObjectiveSet:
                 A_ub=A_ub,
                 b_ub=b_ub,
                 c=c,
+                objective_costs=objective_costs,
+                objective_weights={
+                    parent: reward_weights[parent] for parent in objective_costs
+                },
             )
             opt_problems.append(opt_problem)
 

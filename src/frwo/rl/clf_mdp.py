@@ -7,6 +7,8 @@ import pandas as pd
 from scipy.optimize import linprog
 from scipy.sparse import csc_array, issparse
 
+from frwo.rl.reduced_lp import ReducedLPSolver
+
 # from line_profiler import LineProfiler
 
 
@@ -34,6 +36,12 @@ class ClassificationMDP:
     A_eq_solve_ : scipy.sparse.csc_array
         `A_eq_` as it is passed to the LP solver (see `_to_solver_matrix`):
         the same object as `A_eq_`.
+    lp_solver_ : frwo.rl.reduced_lp.ReducedLPSolver or None
+        Solves the optimization problems in reduced form, warm-started, with
+        ties broken the same way every time (see `frwo.rl.reduced_lp`). None
+        when the reduction doesn't apply (see `_build_lp_solver`). Shared by
+        the copies `with_reward_weights()` makes, so that their solves
+        warm-start each other.
     n_states_ : int
         Number of states.
     state_reducer_ : dict<str, dict<?, ?>>
@@ -76,6 +84,7 @@ class ClassificationMDP:
         self.n_states = None
         self.A_eq_ = None
         self.A_eq_solve_ = None
+        self.lp_solver_ = None
         self.b_eq_ = None
         self.ldf_ = None
         self.opt_problems_ = None
@@ -137,6 +146,7 @@ class ClassificationMDP:
         b_eq_
         A_eq_
         A_eq_solve_
+        lp_solver_
         state_reducer_
         reduced_state_lookup_
         reduced_state_df_
@@ -274,7 +284,55 @@ class ClassificationMDP:
         # that form, so this is the same object.
         self.A_eq_solve_ = _to_solver_matrix(self.A_eq_)
 
+        self.lp_solver_ = self._build_lp_solver(restrict_y)
+
         return None
+
+    def _build_lp_solver(self, restrict_y):
+        """
+        The `ReducedLPSolver` of this MDP, or None if its LP can't be reduced:
+        when some off-diagonal `-gamma * mu0` term of `A_eq_` is kept (gamma
+        too large), or some y-pair constraint coefficient `mu0` is dropped
+        (see `_compute_A_eq`).
+        """
+        mu0 = self.reduced_state_df_["mu0"].to_numpy(dtype=float)
+        if self.gamma * mu0.max() > _HIGHS_SMALL_MATRIX_VALUE or (
+            restrict_y and mu0.min() <= _HIGHS_SMALL_MATRIX_VALUE
+        ):
+            logging.debug("The LP can't be reduced; solving it in full.")
+            return None
+
+        if restrict_y:
+            # Ldf rows 2s and 2s+1 are state s's (see _compute_A_eq). Its
+            # y-pair constraints tie together the states of the same x_cols+z.
+            states = self.ldf_.iloc[0::2]
+            group_of_state = (
+                states.groupby(self.x_cols + ["z"], sort=False, dropna=False)
+                .ngroup()
+                .to_numpy()
+            )
+        else:
+            group_of_state = np.arange(self.n_states_)
+
+        # The diagonal entries of A_eq_'s transition rows are
+        # 1 - gamma * mu0, so each state's occupancy sums to this.
+        solver = ReducedLPSolver(
+            group_of_state=group_of_state,
+            occupancy=mu0 / (1 - self.gamma * mu0),
+        )
+        # Every reduced solution is a solution of the LP...
+        solver.check_parametrization(self.A_eq_, self.b_eq_)
+        # ... and no solution of the LP is lost: its solutions have one degree
+        # of freedom per state, less one per y-pair its constraints tie
+        # together (two non-empty rows each, one per action), so as many as
+        # there are groups.
+        row_nnz = np.diff(self.A_eq_.tocsr().indptr)
+        n_pairs = np.count_nonzero(row_nnz[self.n_states_ :]) // 2
+        assert solver.n_groups == self.n_states_ - n_pairs, (
+            f"{solver.n_groups} groups of states, but the LP's constraints tie"
+            f" together {n_pairs} pairs of its {self.n_states_} states"
+        )
+        return solver
 
     def fit_rewards(self, reward_weights, refit_objectives=True):
         """
@@ -301,6 +359,9 @@ class ClassificationMDP:
         logging.debug("Fitting objectives ...")
         if refit_objectives:
             self.obj_set.fit_objectives(self.ldf_)
+            # Its models were built from the previous objective fits.
+            if self.lp_solver_ is not None:
+                self.lp_solver_.clear_models()
         self.obj_set.build_opt_problems(
             reward_weights=reward_weights,
             ldf=self.ldf_,
@@ -322,6 +383,8 @@ class ClassificationMDP:
         this MDP's (read-only) states, constraints and fitted objectives, but
         has its own `reduced_state_df_`, `obj_set` and `opt_problems_`, so that
         solving it leaves this MDP untouched and reusable for other weights.
+        It also shares `lp_solver_`, so that solving it warm-starts the solves
+        of the copies made after it (which doesn't change their solutions).
 
         Parameters
         ----------
@@ -346,11 +409,14 @@ class ClassificationMDP:
         Parameters
         ----------
         skip_error_terms : bool, default False
-            If true, doesn't try and find all solutions and instead just invokes
-            the scipy solver on the input terms.
+            If true, doesn't try and find all solutions, and solves each
+            optimization problem once. When the LP can be reduced (see
+            `lp_solver_`), it is then solved in reduced form, and its one
+            policy depends only on the reward weights: ties between equally
+            optimal solutions are broken the same way every time.
         method : str, default 'highs'
-            The scipy solver method to use. Options are 'highs' (default),
-            'highs-ds', 'highs-ipm'.
+            The HiGHS solver to use. Options are 'highs' (default),
+            'highs-ds', 'highs-ipm', as for `scipy.optimize.linprog`.
 
         Returns
         -------
@@ -360,6 +426,23 @@ class ClassificationMDP:
         # Find the best policy/reward of all the opt_problems
         best_policies_best_rewards = []
         for subprob in self.opt_problems_:
+            if (
+                skip_error_terms
+                and self.lp_solver_ is not None
+                and subprob.A_eq is self.A_eq_
+                and subprob.objective_costs is not None
+            ):
+                solution = self.lp_solver_.solve(subprob, method=method)
+                opt_pols, opt_rew = (
+                    ([solution[0]], solution[1])
+                    if solution is not None
+                    else ([], -1 * np.inf)
+                )
+                best_policies_best_rewards.append(
+                    {"policies": opt_pols, "reward": np.round(opt_rew, decimals=6)}
+                )
+                continue
+
             opt_pols, opt_rew = _find_all_solutions_lp(
                 n_states=self.n_states_,
                 c=subprob.c,

@@ -108,9 +108,10 @@ common:
   # The LP solver of every optimal classifier policy (options: 'highs',
   # 'highs-ds', 'highs-ipm'). Not tuned: the expert's policy (OptClfMDPPol) is
   # solved with it too, so changing it would also change the demonstrations
-  # every technique is scored against. All three solve the LP exactly, so
-  # they should only differ in which policy they return when several are
-  # equally optimal.
+  # every technique is scored against. All three solve the LP exactly, and
+  # break ties between equally optimal policies the same way (see
+  # src/frwo/rl/reduced_lp.py), so they should return the same policy; they
+  # differ only in speed.
   METHOD: highs
   # The random forest that predicts `y` from `x` for the policies Fairness
   # Reward Weight Optimization learns. Those policies cannot observe `y`, so it
