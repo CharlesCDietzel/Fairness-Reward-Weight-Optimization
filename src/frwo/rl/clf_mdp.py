@@ -710,11 +710,11 @@ def _to_solver_matrix(A):
     return csc_array((A[rows, cols], (rows, cols)), shape=A.shape)
 
 
-def _solve_lp(c, A_eq, b_eq, A_ub, b_ub):
+def _solve_lp(c, A_eq, b_eq, A_ub, b_ub, method="highs"):
     if A_ub is None or A_ub.shape[0] == 0:
         assert b_ub is None or len(b_ub) == 0
-        return linprog(c, A_eq=A_eq, b_eq=b_eq)
-    return linprog(c, A_eq=A_eq, b_eq=b_eq, A_ub=A_ub, b_ub=b_ub)
+        return linprog(c, A_eq=A_eq, b_eq=b_eq, method=method)
+    return linprog(c, A_eq=A_eq, b_eq=b_eq, A_ub=A_ub, b_ub=b_ub, method=method)
 
 
 def _find_all_solutions_lp(
@@ -810,7 +810,7 @@ def _find_all_solutions_lp(
     # Always try the unperturbed problem first. Its objective value is also
     # the fractional LP relaxation's bound, used below to judge whether the
     # cheap search left room for improvement.
-    res_unperturbed = _solve_lp(c, A_eq_solve, b_eq, A_ub_solve, b_ub)
+    res_unperturbed = _solve_lp(c, A_eq_solve, b_eq, A_ub_solve, b_ub, method=method)
     _consider(res_unperturbed)
     fractional_bound = (
         -1 * res_unperturbed.fun if res_unperturbed.x is not None else None
@@ -823,11 +823,15 @@ def _find_all_solutions_lp(
         for i in range(len(c)):
             cpos = np.array(c)
             cpos[i] += error_term
-            _consider(_solve_lp(cpos, A_eq_solve, b_eq, A_ub_solve, b_ub))
+            _consider(
+                _solve_lp(cpos, A_eq_solve, b_eq, A_ub_solve, b_ub, method=method)
+            )
 
             cneg = np.array(c)
             cneg[i] -= error_term
-            _consider(_solve_lp(cneg, A_eq_solve, b_eq, A_ub_solve, b_ub))
+            _consider(
+                _solve_lp(cneg, A_eq_solve, b_eq, A_ub_solve, b_ub, method=method)
+            )
 
         best_found = max(candidates.values()) if candidates else -1 * np.inf
         # Perturbing one coordinate at a time only explores axis-aligned
@@ -862,7 +866,9 @@ def _find_all_solutions_lp(
                 c_rand = np.asarray(c, dtype=float) + rng.normal(
                     scale=random_scale, size=len(c)
                 )
-                _consider(_solve_lp(c_rand, A_eq_solve, b_eq, A_ub_solve, b_ub))
+                _consider(
+                    _solve_lp(c_rand, A_eq_solve, b_eq, A_ub_solve, b_ub, method=method)
+                )
                 if candidates and fractional_bound is not None:
                     best_found = max(candidates.values())
                     if np.isclose(best_found, fractional_bound, atol=0.001):
