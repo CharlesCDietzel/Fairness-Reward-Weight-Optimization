@@ -56,10 +56,10 @@ def compute_optimal_policy(
         weights.
     skip_error_terms : bool, default True
         If true, doesn't try and find all solutions and instead just invokes
-        the scipy solver on the input terms.
+        the solver on the input terms.
     method : str, default 'highs'
-        The scipy solver method to use. Options are 'highs' (default),
-        'highs-ds', 'highs-ipm'.
+        The HiGHS solver to use (see `frwo.rl.clf_mdp._ReducedLP`). Options
+        are 'highs' (default), 'highs-ds', 'highs-ipm'.
     gamma : float, range, [0, 1)
         The MDP discount factor. Should be close to zero since this is a
         classification mdp, but cannot be zero exactly otherwise the linear

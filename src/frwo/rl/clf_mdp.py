@@ -2,10 +2,12 @@ import copy
 import itertools
 import logging
 import numbers
+from types import SimpleNamespace
+
+import highspy
 import numpy as np
 import pandas as pd
-from scipy.optimize import linprog
-from scipy.sparse import csc_array, issparse
+from scipy.sparse import csc_array, csr_array
 
 # from line_profiler import LineProfiler
 
@@ -30,10 +32,12 @@ class ClassificationMDP:
     A_eq_ : scipy.sparse.csc_array, shape (n_rows, 2*n_states_)
         The state-action transition matrix, followed (if `restrict_y`) by the
         action equality constraints. Entries with magnitude <= HiGHS'
-        `small_matrix_value` are omitted (see `_compute_A_eq`).
-    A_eq_solve_ : scipy.sparse.csc_array
-        `A_eq_` as it is passed to the LP solver (see `_to_solver_matrix`):
-        the same object as `A_eq_`.
+        `small_matrix_value` are omitted (see `_compute_A_eq`). The LPs are
+        solved in the reduced form of `reduced_lp_`, which satisfies these
+        constraints by construction; `A_eq_` is only used to verify policies.
+    reduced_lp_ : _ReducedLP
+        The MDP's LPs in reduced form, and the solvers that solve them. Shared
+        by every copy `with_reward_weights()` makes.
     n_states_ : int
         Number of states.
     state_reducer_ : dict<str, dict<?, ?>>
@@ -75,7 +79,7 @@ class ClassificationMDP:
         self.reduced_state_lookup_ = None
         self.n_states = None
         self.A_eq_ = None
-        self.A_eq_solve_ = None
+        self.reduced_lp_ = None
         self.b_eq_ = None
         self.ldf_ = None
         self.opt_problems_ = None
@@ -136,7 +140,7 @@ class ClassificationMDP:
         ---------------
         b_eq_
         A_eq_
-        A_eq_solve_
+        reduced_lp_
         state_reducer_
         reduced_state_lookup_
         reduced_state_df_
@@ -270,9 +274,24 @@ class ClassificationMDP:
         # profiler.disable()
         # profiler.print_stats()
 
-        # `A_eq_` as the LP solver is given it. `A_eq_` is already built in
-        # that form, so this is the same object.
-        self.A_eq_solve_ = _to_solver_matrix(self.A_eq_)
+        # The states `restrict_y` constrains to take the same action: those
+        # with the same x_cols and z (one with y=0, one with y=1). These are
+        # the groups `_compute_A_eq` builds the action equality constraints
+        # of.
+        if restrict_y:
+            state_groups = (
+                self.reduced_state_df_.groupby(self.x_cols + ["z"], sort=False)
+                .ngroup()
+                .to_numpy()
+            )
+        else:
+            state_groups = np.arange(self.n_states_)
+        self.reduced_lp_ = _ReducedLP(
+            mu0=self.reduced_state_df_["mu0"].to_numpy(dtype=float),
+            gamma=self.gamma,
+            state_groups=state_groups,
+        )
+        self.reduced_lp_.check_constraints(self.A_eq_, self.b_eq_)
 
         return None
 
@@ -347,19 +366,27 @@ class ClassificationMDP:
         ----------
         skip_error_terms : bool, default False
             If true, doesn't try and find all solutions and instead just invokes
-            the scipy solver on the input terms.
+            the solver on the input terms.
         method : str, default 'highs'
-            The scipy solver method to use. Options are 'highs' (default),
-            'highs-ds', 'highs-ipm'.
+            The HiGHS solver to use (see `_ReducedLP`). Options are 'highs'
+            (default), 'highs-ds', 'highs-ipm'.
 
         Returns
         -------
         opt_pols : list<np.array>
             Optimal policies.
         """
+        reduced_lp = self.reduced_lp_
+        if reduced_lp.reference_costs is None:
+            reduced_lp.reference_costs = self._reference_costs()
+
         # Find the best policy/reward of all the opt_problems
         best_policies_best_rewards = []
         for subprob in self.opt_problems_:
+            assert subprob.A_eq is self.A_eq_ and subprob.b_eq is self.b_eq_, (
+                "the optimization problems must be built on this MDP's own"
+                " constraints, which its reduced form satisfies"
+            )
             opt_pols, opt_rew = _find_all_solutions_lp(
                 n_states=self.n_states_,
                 c=subprob.c,
@@ -367,9 +394,8 @@ class ClassificationMDP:
                 b_eq=subprob.b_eq,
                 A_ub=subprob.A_ub,
                 b_ub=subprob.b_ub,
+                solve=reduced_lp.solver(subprob, method),
                 skip_error_terms=skip_error_terms,
-                method=method,
-                A_eq_solve=(self.A_eq_solve_ if subprob.A_eq is self.A_eq_ else None),
             )
             best_policies_best_rewards.append(
                 {
@@ -387,6 +413,23 @@ class ClassificationMDP:
             self.reduced_state_df_[f"pi_{i}"] = pi
 
         return opt_pols
+
+    def _reference_costs(self):
+        """
+        The cost vector `c` of each of the MDP's optimization problems, by
+        name, for equal reward weights: the fixed weights every solve's warm
+        start comes from (see `_ReducedLP`). They depend only on the MDP and
+        its fitted objectives, never on which weights are being solved.
+        """
+        obj_set = copy.copy(self.obj_set)
+        names = [obj.name for obj in obj_set.objectives]
+        obj_set.build_opt_problems(
+            reward_weights={name: 1.0 / len(names) for name in names},
+            ldf=self.ldf_,
+            A_eq=self.A_eq_,
+            b_eq=self.b_eq_,
+        )
+        return {problem.name: problem.c for problem in obj_set.opt_problems_}
 
     def _compute_A_eq(self, mu0, ldf, x_cols, restrict_y):
         """
@@ -422,15 +465,13 @@ class ClassificationMDP:
         Returns
         -------
         A_eq_ : scipy.sparse.csc_array
-            Exactly the matrix `_to_solver_matrix()` makes of the dense
-            constraint matrix: entries with magnitude <= HiGHS'
-            `small_matrix_value` (e.g. every `-gamma * mu0` term when gamma is
-            ~1e-9) are omitted, since HiGHS drops them anyway.
+            The constraint matrix, without the entries with magnitude <=
+            HiGHS' `small_matrix_value` (e.g. every `-gamma * mu0` term when
+            gamma is ~1e-9), which HiGHS would drop anyway.
         """
-        # The matrix is built directly as the sparse matrix HiGHS solves with
-        # (see `_to_solver_matrix`), from its (row, col, value) entries. The
-        # dense matrix has ~2*n_states^2 entries (tens of GB for the larger
-        # datasets), almost all of which HiGHS would drop anyway.
+        # The matrix is built directly as a sparse matrix, from its (row, col,
+        # value) entries. The dense matrix has ~2*n_states^2 entries (tens of
+        # GB for the larger datasets), almost all of which are negligible.
         #
         # Construct constraints that correspond to transition matrix.
         # A_eq[s, sp*n_actions + a] = (1 if s == sp else 0) - gamma * mu0[sp]
@@ -536,8 +577,7 @@ class ClassificationMDP:
         vals = np.concatenate(vals)
         keep = np.abs(vals) > _HIGHS_SMALL_MATRIX_VALUE
         A_eq = csc_array((vals[keep], (rows[keep], cols[keep])), shape=(n_rows, n_cols))
-        # Canonical (sorted) row indices within each column, as
-        # `_to_solver_matrix` produces.
+        # Canonical (sorted) row indices within each column.
         A_eq.sort_indices()
         return A_eq
 
@@ -685,36 +725,208 @@ def _round_and_verify_policy(
 # value is <= this are discarded by the solver before it solves.
 _HIGHS_SMALL_MATRIX_VALUE = 1e-9
 
+# The HiGHS `solver` option of each `method`, and whether its solves are warm
+# started (see `_ReducedLP`). An interior point solve can't start from a basis.
+_HIGHS_METHODS = {
+    "highs": ("choose", True),
+    "highs-ds": ("simplex", True),
+    "highs-ipm": ("ipm", False),
+}
 
-def _to_solver_matrix(A):
+
+class _ReducedLP:
     """
-    Converts a dense constraint matrix into the sparse matrix HiGHS actually
-    solves with.
+    The LPs of a `ClassificationMDP` in reduced form, and the HiGHS models that
+    solve them.
 
-    In the dense constraint matrix, every transition row carries a
-    `-gamma * mu0` term for every state-action, but with `gamma` ~1e-9 those
-    terms are far below HiGHS' `small_matrix_value`, so HiGHS drops all of
-    them anyway. Passing the dense matrix makes scipy densely stack, scan and
-    convert millions of entries on every solve, which dominates the solve
-    time. Dropping those same entries up front and handing HiGHS a sparse
-    matrix produces the exact same model, and so the exact same solution, at
-    a fraction of the cost.
+    The reduction
+    -------------
+    Every state of a classification MDP transitions to the initial state
+    distribution `mu0`, whatever the action. So any policy's discounted state
+    occupancy is the same, `mu0 / (1 - gamma)`, and the only freedom the LP's
+    occupancy measure `x` has is how each state splits its occupancy between
+    the two actions. With `restrict_y`, the states with the same x_cols and z
+    (the y=0 and the y=1 one) must split it the same way. So every feasible
+    `x` is
 
-    `ClassificationMDP.A_eq_` is built directly in this form, so it is
-    returned unchanged (as is any sparse matrix).
+        x = x0 + T @ p,   0 <= p <= 1,
+
+    where `p[g]` is the probability that group `g` of tied states predicts 1,
+    `x0` puts each state's whole occupancy on action 0, and `T` moves the
+    fraction `p` of it onto action 1. That turns each LP
+
+        min c @ x   s.t.  A_eq @ x == b_eq,  A_ub @ x <= b_ub,  x >= 0
+
+    into one with one variable per group, only `A_ub`'s few rows (one per
+    absolute-value objective, or two for Equalized Odds) and bounds:
+
+        min (T.T @ c) @ p + c @ x0   s.t.  (A_ub @ T) @ p <= b_ub - A_ub @ x0,
+                                           0 <= p <= 1.
+
+    This is exactly the MDP's LP, for any `gamma`. (The full LP as HiGHS was
+    given it dropped the `-gamma * mu0` terms of `A_eq` when gamma is ~1e-9,
+    which shifted it by ~1e-9; see `check_constraints()`.)
+
+    Warm starts
+    -----------
+    Only `c` depends on the reward weights. Each optimization problem (one
+    per combination of absolute-value splits, by name) gets one HiGHS model,
+    built once, whose constraints never change. It is first solved from
+    scratch for the costs of equal reward weights (`reference_costs`), and
+    every later solve of it starts from that solve's optimal basis. Starting
+    from a fixed basis, rather than from the previous solve's, matters:
+    the LPs often have many optimal solutions (when a fairness constraint is
+    active, whole classes of groups are tied), and which one the simplex
+    method returns depends on where it starts. Starting every solve from the
+    same basis makes the solution, and so the policy, a function of the
+    reward weights alone, whatever was solved before. The reference basis is
+    itself determined by the MDP, so the MDP solves the same way however many
+    times, and in whatever order, it is solved, and so does a copy of it (the
+    HiGHS models are not copied but rebuilt, the same way).
+
+    Parameters
+    ----------
+    mu0 : numpy.array<float>, len(n_states)
+        Initial state probabilities.
+    gamma : float
+        The discount factor.
+    state_groups : numpy.array<int>, len(n_states)
+        The group of each state: states in the same group must take the same
+        action.
+
+    Attributes
+    ----------
+    reference_costs : dict<str, numpy.array<float>> or None
+        The cost vector of each optimization problem, by name, for equal
+        reward weights. Set by the MDP before the first solve.
     """
-    if A is None or issparse(A):
-        return A
-    A = np.atleast_2d(np.asarray(A, dtype=float))
-    rows, cols = np.nonzero(np.abs(A) > _HIGHS_SMALL_MATRIX_VALUE)
-    return csc_array((A[rows, cols], (rows, cols)), shape=A.shape)
 
+    def __init__(self, mu0, gamma, state_groups):
+        n_states = len(mu0)
+        n_cols = 2 * n_states
+        _, groups = np.unique(state_groups, return_inverse=True)
+        self.n_states = n_states
+        self.n_groups = int(groups.max()) + 1 if n_states else 0
+        self.state_groups = groups
+        occupancy = np.asarray(mu0, dtype=float) / (1 - gamma)
+        self.x0 = np.zeros(n_cols)
+        self.x0[0::2] = occupancy
+        action_cols = np.r_[2 * np.arange(n_states), 2 * np.arange(n_states) + 1]
+        self.T = csr_array(
+            (np.r_[-occupancy, occupancy], (action_cols, np.r_[groups, groups])),
+            shape=(n_cols, self.n_groups),
+        )
+        self.T_t = self.T.T.tocsr()
+        self.reference_costs = None
+        self._models = {}
 
-def _solve_lp(c, A_eq, b_eq, A_ub, b_ub, method="highs"):
-    if A_ub is None or A_ub.shape[0] == 0:
-        assert b_ub is None or len(b_ub) == 0
-        return linprog(c, A_eq=A_eq, b_eq=b_eq, method=method)
-    return linprog(c, A_eq=A_eq, b_eq=b_eq, A_ub=A_ub, b_ub=b_ub, method=method)
+    def check_constraints(self, A_eq, b_eq, atol=1e-8):
+        """
+        Asserts that the reduction describes exactly the occupancy measures
+        `A_eq @ x == b_eq` allows: that every `x0 + T @ p` satisfies it, and
+        that the groups tie together exactly as many states as `A_eq`'s
+        action equality constraints do.
+        """
+        p = np.random.default_rng(0).uniform(size=self.n_groups)
+        x = self.x0 + self.T @ p
+        residual = np.abs(A_eq @ x - np.asarray(b_eq, dtype=float)).max(initial=0)
+        assert residual <= atol, f"the reduced LP violates A_eq by {residual}"
+        # Each tied pair of states has one action equality row per action.
+        n_tied_rows = np.count_nonzero(np.diff(csr_array(A_eq).indptr)[self.n_states :])
+        assert 2 * (self.n_states - self.n_groups) == n_tied_rows, (
+            f"{self.n_states - self.n_groups} states are tied to another by the"
+            f" reduction, but A_eq has {n_tied_rows} action equality rows"
+        )
+
+    def solver(self, problem, method="highs"):
+        """
+        Returns `solve(c)`, which solves `problem` for the costs `c` (of the
+        full LP), returning an object with the full LP's solution `x` (None if
+        the LP is infeasible) and objective value `fun`, like
+        `scipy.optimize.linprog()`'s.
+
+        `problem`'s constraints must be those of the problem of the same name
+        the reference costs were built for. They are, since an optimization
+        problem's constraints depend only on its splits, which its name
+        names, and not on the reward weights.
+        """
+        if method not in _HIGHS_METHODS:
+            raise ValueError(
+                f"Unknown LP method {method!r}; options are {list(_HIGHS_METHODS)}."
+            )
+        key = (problem.name, method)
+        if key not in self._models:
+            self._models[key] = self._build_model(problem, method)
+        highs, basis, warm = self._models[key]
+        index = np.arange(self.n_groups, dtype=np.int32)
+
+        def solve(c):
+            c = np.asarray(c, dtype=float)
+            # Clear everything the last solve left (setBasis() alone leaves
+            # some of HiGHS' internal simplex state, which makes the solution
+            # depend on what was solved before), then start from the
+            # reference basis.
+            highs.clearSolver()
+            highs.changeColsCost(self.n_groups, index, self.T_t @ c)
+            if warm and basis is not None:
+                highs.setBasis(basis)
+            highs.run()
+            if highs.getModelStatus() != highspy.HighsModelStatus.kOptimal:
+                return SimpleNamespace(x=None, fun=None)
+            p = np.asarray(highs.getSolution().col_value)
+            return SimpleNamespace(
+                x=self.x0 + self.T @ p,
+                fun=highs.getInfo().objective_function_value + c @ self.x0,
+            )
+
+        return solve
+
+    def _build_model(self, problem, method):
+        """
+        Builds `problem`'s HiGHS model and solves it from scratch for its
+        reference costs, whose optimal basis every later solve starts from.
+
+        Returns
+        -------
+        (highs, basis, warm) : (highspy.Highs, highspy.HighsBasis or None, bool)
+            `basis` is None if the reference solve found no optimal solution.
+        """
+        solver_option, warm = _HIGHS_METHODS[method]
+        highs = highspy.Highs()
+        highs.setOptionValue("output_flag", False)
+        highs.setOptionValue("solver", solver_option)
+        n = self.n_groups
+        highs.addVars(n, np.zeros(n), np.ones(n))
+        if problem.A_ub is not None and len(problem.A_ub) > 0:
+            A_ub = np.atleast_2d(np.asarray(problem.A_ub, dtype=float))
+            E = csr_array(A_ub @ self.T)
+            b = np.asarray(problem.b_ub, dtype=float) - A_ub @ self.x0
+            highs.addRows(
+                E.shape[0],
+                np.full(E.shape[0], -highspy.kHighsInf),
+                b,
+                E.nnz,
+                E.indptr[:-1].astype(np.int32),
+                E.indices.astype(np.int32),
+                E.data,
+            )
+
+        basis = None
+        if warm:
+            assert self.reference_costs is not None, "reference_costs is not set"
+            reference_c = np.asarray(self.reference_costs[problem.name], dtype=float)
+            highs.changeColsCost(n, np.arange(n, dtype=np.int32), self.T_t @ reference_c)
+            highs.run()
+            if highs.getModelStatus() == highspy.HighsModelStatus.kOptimal:
+                basis = highs.getBasis()
+        return highs, basis, warm
+
+    def __getstate__(self):
+        # HiGHS models can't be copied or pickled. A copy rebuilds them, and
+        # solves exactly as this does, since they are built deterministically.
+        state = self.__dict__.copy()
+        state["_models"] = {}
+        return state
 
 
 def _find_all_solutions_lp(
@@ -724,16 +936,13 @@ def _find_all_solutions_lp(
     b_eq,
     A_ub=None,
     b_ub=None,
+    solve=None,
     error_term=1e-12,
     skip_error_terms=True,
-    method="highs",
-    A_eq_solve=None,
-    A_ub_solve=None,
 ):
     """
-    Wrapper around scipy.optimize.linprog that finds ALL optimal solutions
-    by iteratively solving the LP problem after adding/subtracting an "error"
-    term to each objective component.
+    Finds ALL optimal solutions of an LP by iteratively solving it after
+    adding/subtracting an "error" term to each objective component.
 
     Parameters
     ----------
@@ -753,19 +962,16 @@ def _find_all_solutions_lp(
     b_ub : 1-D array, optional
         The inequality constraint vector. Each element represents an
         upper bound on the corresponding value of ``A_ub @ x``.
+    solve : callable
+        `solve(c)` solves the LP with the constraints above for the costs `c`,
+        returning an object with the solution `x` (None if the LP is
+        infeasible) and the objective value `fun`. See `_ReducedLP.solver()`.
+        The constraints above are only used to verify its solutions.
     error_term : float, default 1e-12
         Allowed error from the optimal reward to still be considered optimal.
     skip_error_terms : bool, default False
         If true, doesn't try and find all solutions and instead just invokes
-        the scipy solver on the input terms.
-    method : str, default 'highs'
-        The scipy solver method to use. Options are 'highs' (default),
-        'highs-ds', 'highs-ipm'.
-    A_eq_solve, A_ub_solve : scipy.sparse array, optional
-        `A_eq` and `A_ub` as passed to the solver (see `_to_solver_matrix`).
-        Computed from `A_eq` and `A_ub` when not given; callers solving many
-        problems that share a constraint matrix can pass it in to convert it
-        only once.
+        the solver on the input terms.
 
     Returns
     -------
@@ -783,22 +989,10 @@ def _find_all_solutions_lp(
         gap, where no deterministic policy reaches what a randomized one
         could.
     """
-    if A_eq_solve is None:
-        A_eq_solve = _to_solver_matrix(A_eq)
-    if A_ub_solve is None:
-        A_ub_solve = _to_solver_matrix(A_ub)
-
     candidates = {}  # pi_opt (as tuple) -> achieved_reward
 
     def _consider(res):
-        # Verified against the equality constraints the solver was given,
-        # whose matrix-vector product is far cheaper than the dense `A_eq`'s.
-        # It only omits entries with magnitude <= 1e-9 (see
-        # `_to_solver_matrix`), which shifts `A_eq @ x` by at most ~1e-9 --
-        # negligible next to the verification's 1e-6 tolerance.
-        result = _round_and_verify_policy(
-            res, n_states, c, A_eq_solve, b_eq, A_ub, b_ub
-        )
+        result = _round_and_verify_policy(res, n_states, c, A_eq, b_eq, A_ub, b_ub)
         if result is None:
             return
         pi_opt, achieved_reward = result
@@ -810,7 +1004,7 @@ def _find_all_solutions_lp(
     # Always try the unperturbed problem first. Its objective value is also
     # the fractional LP relaxation's bound, used below to judge whether the
     # cheap search left room for improvement.
-    res_unperturbed = _solve_lp(c, A_eq_solve, b_eq, A_ub_solve, b_ub, method=method)
+    res_unperturbed = solve(c)
     _consider(res_unperturbed)
     fractional_bound = (
         -1 * res_unperturbed.fun if res_unperturbed.x is not None else None
@@ -823,15 +1017,11 @@ def _find_all_solutions_lp(
         for i in range(len(c)):
             cpos = np.array(c)
             cpos[i] += error_term
-            _consider(
-                _solve_lp(cpos, A_eq_solve, b_eq, A_ub_solve, b_ub, method=method)
-            )
+            _consider(solve(cpos))
 
             cneg = np.array(c)
             cneg[i] -= error_term
-            _consider(
-                _solve_lp(cneg, A_eq_solve, b_eq, A_ub_solve, b_ub, method=method)
-            )
+            _consider(solve(cneg))
 
         best_found = max(candidates.values()) if candidates else -1 * np.inf
         # Perturbing one coordinate at a time only explores axis-aligned
@@ -866,9 +1056,7 @@ def _find_all_solutions_lp(
                 c_rand = np.asarray(c, dtype=float) + rng.normal(
                     scale=random_scale, size=len(c)
                 )
-                _consider(
-                    _solve_lp(c_rand, A_eq_solve, b_eq, A_ub_solve, b_ub, method=method)
-                )
+                _consider(solve(c_rand))
                 if candidates and fractional_bound is not None:
                     best_found = max(candidates.values())
                     if np.isclose(best_found, fractional_bound, atol=0.001):

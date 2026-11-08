@@ -110,7 +110,11 @@ common:
   # solved with it too, so changing it would also change the demonstrations
   # every technique is scored against. All three solve the LP exactly, so
   # they should only differ in which policy they return when several are
-  # equally optimal.
+  # equally optimal. 'highs' and 'highs-ds' warm start every solve with the
+  # simplex method from the optimal basis of equal reward weights; 'highs-ipm'
+  # solves each from scratch with the interior point method. Either way the
+  # policy depends only on the reward weights (see `_ReducedLP` in
+  # src/frwo/rl/clf_mdp.py).
   METHOD: highs
   # The random forest that predicts `y` from `x` for the policies Fairness
   # Reward Weight Optimization learns. Those policies cannot observe `y`, so it
