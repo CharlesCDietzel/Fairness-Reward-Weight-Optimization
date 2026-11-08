@@ -205,7 +205,7 @@ def run_trial(args):
         command = [
             sys.executable,
             "-m",
-            "frwo.FRWO_Biased_Demonstrations",
+            "frwo.FRWO_Experiments",
             "--config",
             args.config,
             "--results-file",

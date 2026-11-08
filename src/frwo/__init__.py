@@ -7,7 +7,7 @@ def __getattr__(name):
     # submodules such as `frwo.config` and `frwo.sweep` would otherwise
     # load too.
     if name == "main":
-        from frwo.FRWO_Biased_Demonstrations import main
+        from frwo.FRWO_Experiments import main
 
         return main
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

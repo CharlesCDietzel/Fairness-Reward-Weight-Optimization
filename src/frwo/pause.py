@@ -4,7 +4,7 @@ Pausing and resuming the experiment script between trials.
 `uv run frwo-pause` asks the running experiment (`uv run frwo`) to
 pause. The experiment checks for the request each time it finishes a trial.
 When it finds one, it writes a checkpoint and exits. `uv run frwo-resume`
-(see `frwo.FRWO_Biased_Demonstrations.resume_main`) then continues
+(see `frwo.FRWO_Experiments.resume_main`) then continues
 from that checkpoint with the next trial.
 
 Resuming gives exactly the results an uninterrupted run would have. The

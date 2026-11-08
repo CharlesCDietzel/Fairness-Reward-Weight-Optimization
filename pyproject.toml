@@ -39,9 +39,9 @@ dependencies = [
 ]
 
 [project.scripts]
-frwo = "frwo.FRWO_Biased_Demonstrations:main"
+frwo = "frwo.FRWO_Experiments:main"
 frwo-pause = "frwo.pause:pause_main"
-frwo-resume = "frwo.FRWO_Biased_Demonstrations:resume_main"
+frwo-resume = "frwo.FRWO_Experiments:resume_main"
 frwo-tune = "frwo.sweep:tune_main"
 frwo-tune-pause = "frwo.sweep:tune_pause_main"
 frwo-tune-resume = "frwo.sweep:tune_resume_main"
