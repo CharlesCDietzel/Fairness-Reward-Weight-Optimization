@@ -27,6 +27,7 @@ dependencies = [
     "smac>=2.4.1",
     "sweeps>=0.2.0",
     "tabulate>=0.10.0",
+    "threadpoolctl>=3.8.0",
     # The following torch packages are pinned to specific versions for
     # compatibility with ROCm 10.1.0, which is the version of ROCm that is
     # currently compatible with the AMD RX 7900XTX GPU. Unpin them when

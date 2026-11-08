@@ -1,3 +1,5 @@
+import functools
+
 import pandas as pd
 from sklearn.base import BaseEstimator, ClassifierMixin
 from sklearn.compose import ColumnTransformer
@@ -6,6 +8,36 @@ from sklearn.impute import SimpleImputer
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import KBinsDiscretizer, OneHotEncoder, OrdinalEncoder
 from sklearn.utils.validation import check_is_fitted
+from threadpoolctl import ThreadpoolController
+
+# Created on first use, once the BLAS libraries it controls are loaded.
+_blas_controller = None
+
+
+def single_threaded_blas(func):
+    """
+    Decorator that runs `func` with BLAS limited to one thread.
+
+    Fairness Reward Weight Optimization's weight search and policy computation
+    interleave many small HiGHS solves with vector operations over every
+    state. OpenBLAS splits even those small operations across every core, and
+    waking its threads (while HiGHS' own threads compete for the cores) costs
+    far more than the arithmetic: on Adult, one thread made a whole trial
+    about twice as fast, with identical results. It also makes those results
+    independent of the machine's core count. The limit is scoped to `func`
+    rather than global, so that techniques doing large matrix operations keep
+    their threads.
+    """
+
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        global _blas_controller
+        if _blas_controller is None:
+            _blas_controller = ThreadpoolController()
+        with _blas_controller.limit(limits=1, user_api="blas"):
+            return func(*args, **kwargs)
+
+    return wrapper
 
 
 class ManualClassifier:

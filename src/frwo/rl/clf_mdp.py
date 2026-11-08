@@ -45,8 +45,7 @@ class ClassificationMDP:
         default values. Used to reduce the state space by replacing infrequent
         state values with default values.
     reduced_state_df_ : pandas.DataFrame
-        Index is state index, columns are features, mu0, and optimal policy
-        actions.
+        Index is state index, columns are features and mu0.
     reduced_state_lookup_ : dict<tuple, int>
         Maps classification features to its MDP state index.
     ldf_ : pandas.DataFrame
@@ -341,8 +340,8 @@ class ClassificationMDP:
         This MDP must be fit with `fit_states()`, and its `obj_set`'s objectives
         fit to it with `obj_set.fit_objectives(self.ldf_)`. The copy shares
         this MDP's (read-only) states, constraints and fitted objectives, but
-        has its own `reduced_state_df_`, `obj_set` and `opt_problems_`, so that
-        solving it leaves this MDP untouched and reusable for other weights.
+        has its own `obj_set` and `opt_problems_`, so that solving it leaves
+        this MDP untouched and reusable for other weights.
 
         Parameters
         ----------
@@ -355,7 +354,6 @@ class ClassificationMDP:
         clf_mdp : ClassificationMDP
         """
         clf_mdp = copy.copy(self)
-        clf_mdp.reduced_state_df_ = self.reduced_state_df_.copy()
         clf_mdp.obj_set = copy.copy(self.obj_set)
         clf_mdp.fit_rewards(reward_weights, refit_objectives=False)
         return clf_mdp
@@ -395,13 +393,9 @@ class ClassificationMDP:
                 " constraints, which its reduced form satisfies"
             )
             opt_pols, opt_rew = _find_all_solutions_lp(
-                n_states=self.n_states_,
                 c=subprob.c,
-                A_eq=subprob.A_eq,
-                b_eq=subprob.b_eq,
-                A_ub=subprob.A_ub,
-                b_ub=subprob.b_ub,
                 solve=reduced_lp.solver(subprob, method),
+                round_policy=reduced_lp.rounder(subprob, subprob.c),
                 skip_error_terms=skip_error_terms,
             )
             best_policies_best_rewards.append(
@@ -415,11 +409,9 @@ class ClassificationMDP:
             best_policies_best_rewards,
         )
 
-        # Append optimal policy actions to reduced_state_df_ attribute
-        for i, pi in enumerate(opt_pols):
-            self.reduced_state_df_[f"pi_{i}"] = pi
-
-        return opt_pols
+        # The policies are found as the action of each group (see
+        # `_ReducedLP.rounder()`); return the action of each state.
+        return [reduced_lp.state_policy(pi) for pi in opt_pols]
 
     def _reference_costs(self):
         """
@@ -631,101 +623,18 @@ def _find_best_policies_from_multiple_opt_problems(best_policies_best_rewards):
     """
     rewards = [bpbr["reward"] for bpbr in best_policies_best_rewards]
     best_idx = np.argwhere(rewards == np.amax(rewards)).flatten().tolist()
-    logging.debug(f"best_idx: {best_idx}")
+    logging.debug("best_idx: %s", best_idx)
     best_of_best_pols = []
     # For each opt_problem index where the reward is the best reward
     for idx in best_idx:
-        # Get all the policies from that opt_problem (all have same reward)
-        pols = best_policies_best_rewards[idx]["policies"]
-        # For each of these policies, check add it to the list of
-        # best_of_best_pols if it's not already in it.
-        for pol in pols:
-            logging.debug(f"pol {pol}")
-            pol_in_best = False
-            for bpol in best_of_best_pols:
-                logging.debug("\tbpol {bpol}")
-                if np.allclose(pol, bpol, atol=1e-5):
-                    logging.debug("\t\t" + f"{pol} already in best_of_best_pols")
-                    pol_in_best = True
-                    break
-            if not pol_in_best:
-                logging.debug(f"appending {pol} to best_of_best_pols")
+        # Get all the policies from that opt_problem (all have same reward),
+        # and add each to best_of_best_pols if it's not already in it.
+        for pol in best_policies_best_rewards[idx]["policies"]:
+            if not any(np.array_equal(pol, bpol) for bpol in best_of_best_pols):
+                logging.debug("appending %s to best_of_best_pols", pol)
                 best_of_best_pols.append(pol)
     best_of_best_reward = rewards[best_idx[0]]
     return best_of_best_pols, best_of_best_reward
-
-
-def _round_occupancy(x, n_states, n_actions=2):
-    """
-    Rounds a state-action occupancy measure `x` to a deterministic policy.
-
-    Each state takes its argmax action (the first one, on ties), and all of the
-    state's occupancy mass is moved onto that action.
-
-    Returns
-    -------
-    pi_opt : numpy.array<int>, len(n_states)
-        The action of each state.
-    x_det : numpy.array<float>, len(x)
-        The occupancy measure of the rounded policy.
-    """
-    state_slices = x[: n_states * n_actions].reshape(n_states, n_actions)
-    pi_opt = state_slices.argmax(axis=1).astype(int)
-    x_det = np.zeros_like(x)
-    x_det[np.arange(n_states) * n_actions + pi_opt] = state_slices.sum(axis=1)
-    return pi_opt, x_det
-
-
-def _round_and_verify_policy(
-    res, n_states, c, A_eq, b_eq, A_ub, b_ub, feasibility_atol=1e-6
-):
-    """
-    Rounds an LP solution to a deterministic policy (argmax action per
-    state) and verifies that the rounded policy is actually valid, instead
-    of trusting the rounding blindly.
-
-    `res.x` is a state-action occupancy measure, which is only guaranteed
-    to decompose into a clean "one action gets all the mass" pattern per
-    state when the LP has a unique, non-degenerate optimum. When the
-    optimal face is degenerate -- which happens readily once A_ub encodes
-    constraints that couple multiple states together, e.g. Equalized Odds'
-    parity constraints -- the solver can return a solution that splits a
-    state's mass fractionally across both actions. Naively taking argmax in
-    that case silently produces a *different* policy than the one that was
-    actually optimized, which can be infeasible. This reconstructs the
-    exact occupancy vector implied by the rounded policy and checks it
-    against the original constraints, rejecting the rounding when it isn't
-    actually feasible.
-
-    Note that this only checks feasibility, not whether the rounded policy
-    matches the (possibly fractional) reward the LP solve reported. For
-    constraints like exact Equalized Odds parity combined with another
-    objective, the true fractional optimum can require a genuinely
-    randomized decision rule that no deterministic policy can replicate
-    (see Hardt et al. 2016) -- an unavoidable integrality gap, not a
-    rounding artifact. Callers should take the best-reward feasible
-    candidate found across many solves, rather than expect any single
-    candidate to match the LP's reported objective value.
-
-    Returns
-    -------
-    (pi_opt, achieved_reward) if the rounded policy is feasible, else None.
-    """
-    if res.x is None:
-        # Infeasible, unbounded, or otherwise failed solve.
-        return None
-
-    pi_opt, x_det = _round_occupancy(res.x, n_states)
-
-    if not np.allclose(A_eq @ x_det, b_eq, atol=feasibility_atol):
-        return None
-
-    if A_ub is not None and len(A_ub) > 0:
-        if np.any(A_ub @ x_det > np.asarray(b_ub) + feasibility_atol):
-            return None
-
-    achieved_reward = -1 * (np.asarray(c) @ x_det)
-    return pi_opt, achieved_reward
 
 
 # HiGHS' default `small_matrix_value`: constraint matrix entries whose absolute
@@ -858,6 +767,7 @@ class _ReducedLP:
         )
         self.prepared = False
         self._models = {}
+        self._class_constraints = {}
 
     def check_constraints(self, A_eq, b_eq, atol=1e-8):
         """
@@ -951,6 +861,8 @@ class _ReducedLP:
             "groups merged into a class don't have parallel columns"
         )
 
+        self._group_class = group_class
+        self._group_weight = group_weight
         self.reference_costs = reference_costs
         self.prepared = True
 
@@ -964,12 +876,106 @@ class _ReducedLP:
         )
         return p
 
+    def state_policy(self, group_policy):
+        """The action of each state, for the action of each group."""
+        return np.asarray(group_policy)[self.state_groups].astype(int)
+
+    def _constraints(self, problem):
+        """
+        `problem`'s inequality constraints in class space, `E @ r <= b`, or
+        `(None, None)` if it has none. Cached by name, like the models (see
+        `solver()`).
+        """
+        if problem.name not in self._class_constraints:
+            if problem.A_ub is None or len(problem.A_ub) == 0:
+                constraints = (None, None)
+            else:
+                A_ub = np.atleast_2d(np.asarray(problem.A_ub, dtype=float))
+                E = np.asarray(A_ub @ self.T_class)
+                b = np.asarray(problem.b_ub, dtype=float) - A_ub @ self.x0
+                constraints = (E, b)
+            self._class_constraints[problem.name] = constraints
+        return self._class_constraints[problem.name]
+
+    def rounder(self, problem, c, feasibility_atol=1e-6):
+        """
+        Returns `round_policy(res, verify=True)`, which rounds a solution of
+        `problem` (from `solver()`) to a deterministic policy, and verifies
+        that the rounded policy is actually feasible, instead of trusting the
+        rounding blindly.
+
+        A solution is only guaranteed to give every group all-or-nothing of
+        action 1 when the LP's optimum is unique and non-degenerate. When the
+        optimal face is degenerate -- which happens readily once `A_ub`
+        couples many states together, e.g. with Equalized Odds' parity
+        constraints -- it can leave some groups (at most one per class)
+        predicting 1 with a fractional probability. Rounding those (to 1 iff
+        that probability is > 0.5, which is the argmax action of each of the
+        group's states, the first on ties) silently produces a *different*
+        policy than the one that was optimized, which can be infeasible. So
+        the rounded policy is checked against `problem`'s constraints, and
+        rejected (unless `verify` is False) when it doesn't satisfy them.
+
+        This only checks feasibility, not whether the rounded policy matches
+        the (possibly fractional) reward the LP solve reported. For
+        constraints like exact Equalized Odds parity combined with another
+        objective, the true fractional optimum can require a genuinely
+        randomized decision rule that no deterministic policy can replicate
+        (see Hardt et al. 2016) -- an unavoidable integrality gap, not a
+        rounding artifact. Callers should take the best-reward feasible
+        candidate found across many solves, rather than expect any single
+        candidate to match the LP's reported objective value.
+
+        Everything is computed in group and class space: the rounded policy's
+        occupancy measure is `x0 + T @ policy`, so its constraint values and
+        reward are those of the class LP at `q`, each class's fraction of
+        weight predicting 1.
+
+        Parameters
+        ----------
+        problem : OptimizationProblem
+        c : numpy.array<float>
+            The costs (of the full LP) the rounded policy's reward is computed
+            for.
+        feasibility_atol : float, default 1e-6
+            How much the rounded policy may exceed `b_ub` by.
+
+        Returns
+        -------
+        round_policy : callable
+            `round_policy(res, verify=True)` returns `(policy, reward)`, the
+            action (0 or 1) of each group and the policy's reward, or None if
+            the LP was infeasible or (when `verify`) the policy isn't.
+        """
+        E, b = self._constraints(problem)
+        c = np.asarray(c, dtype=float)
+        class_costs = self.T_class_t @ c
+        cost_offset = c @ self.x0
+
+        def round_policy(res, verify=True):
+            if res.r is None:
+                # Infeasible, or otherwise failed solve.
+                return None
+            policy = (self._groups_of_classes(res.r) > 0.5).astype(np.int8)
+            q = (
+                np.bincount(
+                    self._group_class,
+                    weights=self._group_weight * policy,
+                    minlength=self.n_classes,
+                )
+                / self.class_weight
+            )
+            if verify and E is not None and np.any(E @ q > b + feasibility_atol):
+                return None
+            return policy, -1 * (cost_offset + class_costs @ q)
+
+        return round_policy
+
     def solver(self, problem, method="highs"):
         """
         Returns `solve(c)`, which solves `problem` for the costs `c` (of the
-        full LP), returning an object with the full LP's solution `x` (None if
-        the LP is infeasible) and objective value `fun`, like
-        `scipy.optimize.linprog()`'s.
+        full LP), returning an object with the class LP's solution `r` (None
+        if the LP is infeasible) and the full LP's objective value `fun`.
 
         `problem`'s constraints must be those of the problem of the same name
         the reference costs were built for. They are, since an optimization
@@ -999,10 +1005,9 @@ class _ReducedLP:
                 highs.setBasis(basis)
             highs.run()
             if highs.getModelStatus() != highspy.HighsModelStatus.kOptimal:
-                return SimpleNamespace(x=None, fun=None)
-            r = np.asarray(highs.getSolution().col_value)
+                return SimpleNamespace(r=None, fun=None)
             return SimpleNamespace(
-                x=self.x0 + self.T @ self._groups_of_classes(r),
+                r=np.asarray(highs.getSolution().col_value),
                 fun=highs.getInfo().objective_function_value + c @ self.x0,
             )
 
@@ -1024,10 +1029,9 @@ class _ReducedLP:
         highs.setOptionValue("solver", solver_option)
         n = self.n_classes
         highs.addVars(n, np.zeros(n), np.ones(n))
-        if problem.A_ub is not None and len(problem.A_ub) > 0:
-            A_ub = np.atleast_2d(np.asarray(problem.A_ub, dtype=float))
-            E = csr_array(A_ub @ self.T_class)
-            b = np.asarray(problem.b_ub, dtype=float) - A_ub @ self.x0
+        E, b = self._constraints(problem)
+        if E is not None:
+            E = csr_array(E)
             highs.addRows(
                 E.shape[0],
                 np.full(E.shape[0], -highspy.kHighsInf),
@@ -1058,13 +1062,9 @@ class _ReducedLP:
 
 
 def _find_all_solutions_lp(
-    n_states,
     c,
-    A_eq,
-    b_eq,
-    A_ub=None,
-    b_ub=None,
-    solve=None,
+    solve,
+    round_policy,
     error_term=1e-12,
     skip_error_terms=True,
 ):
@@ -1074,27 +1074,16 @@ def _find_all_solutions_lp(
 
     Parameters
     ----------
-    n_states = int
-        Number of states.
     c : 1-D array
         The coefficients of the linear objective function to be minimized.
-    A_eq : 2-D array
-        The equality constraint matrix. Each row of ``A_eq`` specifies the
-        coefficients of a linear equality constraint on ``x``.
-    b_eq : 1-D array
-        The equality constraint vector. Each element of ``A_eq @ x`` must equal
-        the corresponding element of ``b_eq``.
-    A_ub : 2-D array, optional
-        The inequality constraint matrix. Each row of ``A_ub`` specifies the
-        coefficients of a linear inequality constraint on ``x``.
-    b_ub : 1-D array, optional
-        The inequality constraint vector. Each element represents an
-        upper bound on the corresponding value of ``A_ub @ x``.
     solve : callable
-        `solve(c)` solves the LP with the constraints above for the costs `c`,
-        returning an object with the solution `x` (None if the LP is
-        infeasible) and the objective value `fun`. See `_ReducedLP.solver()`.
-        The constraints above are only used to verify its solutions.
+        `solve(c)` solves the LP for the costs `c`, returning an object with
+        the class LP's solution `r` (None if the LP is infeasible) and the
+        objective value `fun`. See `_ReducedLP.solver()`.
+    round_policy : callable
+        `round_policy(res, verify=True)` rounds a solution to a policy and
+        returns it with its reward for the costs `c`, or None if the policy
+        isn't feasible. See `_ReducedLP.rounder()`.
     error_term : float, default 1e-12
         Allowed error from the optimal reward to still be considered optimal.
     skip_error_terms : bool, default False
@@ -1104,10 +1093,10 @@ def _find_all_solutions_lp(
     Returns
     -------
     best_policies : list<numpy.array>
-        List of the best-reward *feasible* policies found (see
-        `_round_and_verify_policy`). Can be empty if no candidate solve
-        produced a feasible deterministic policy at all (as opposed to one
-        that merely falls short of the LP relaxation's bound, which is
+        List of the best-reward *feasible* policies found, as the action of
+        each group (see `_ReducedLP.rounder()`). Can be empty if no candidate
+        solve produced a feasible deterministic policy at all (as opposed to
+        one that merely falls short of the LP relaxation's bound, which is
         common and expected -- see `best_reward`).
     best_reward : float
         The best reward actually achieved by a feasible policy in
@@ -1117,17 +1106,17 @@ def _find_all_solutions_lp(
         gap, where no deterministic policy reaches what a randomized one
         could.
     """
-    candidates = {}  # pi_opt (as tuple) -> achieved_reward
+    candidates = {}  # policy (as bytes) -> (policy, achieved_reward)
 
     def _consider(res):
-        result = _round_and_verify_policy(res, n_states, c, A_eq, b_eq, A_ub, b_ub)
+        result = round_policy(res)
         if result is None:
             return
-        pi_opt, achieved_reward = result
-        key = tuple(pi_opt.tolist())
+        policy, achieved_reward = result
+        key = policy.tobytes()
         if key not in candidates:
-            candidates[key] = achieved_reward
-            logging.debug(f"Optimal Policy:\t, {pi_opt}, reward {achieved_reward} \n")
+            candidates[key] = (policy, achieved_reward)
+            logging.debug("Optimal Policy:\t%s, reward %s", policy, achieved_reward)
 
     # Always try the unperturbed problem first. Its objective value is also
     # the fractional LP relaxation's bound, used below to judge whether the
@@ -1135,8 +1124,11 @@ def _find_all_solutions_lp(
     res_unperturbed = solve(c)
     _consider(res_unperturbed)
     fractional_bound = (
-        -1 * res_unperturbed.fun if res_unperturbed.x is not None else None
+        -1 * res_unperturbed.fun if res_unperturbed.r is not None else None
     )
+
+    def best_found():
+        return max(reward for _, reward in candidates.values())
 
     if not skip_error_terms:
         # Perturbing each objective coordinate in turn nudges the solver
@@ -1151,7 +1143,6 @@ def _find_all_solutions_lp(
             cneg[i] -= error_term
             _consider(solve(cneg))
 
-        best_found = max(candidates.values()) if candidates else -1 * np.inf
         # Perturbing one coordinate at a time only explores axis-aligned
         # directions off the current vertex, which is often not enough to
         # reach a different vertex of a highly degenerate optimal face
@@ -1164,7 +1155,9 @@ def _find_all_solutions_lp(
         # (or found nothing at all); most well-behaved objectives won't
         # need it.
         if fractional_bound is None or not np.isclose(
-            best_found, fractional_bound, atol=0.001
+            best_found() if candidates else -1 * np.inf,
+            fractional_bound,
+            atol=0.001,
         ):
             # Random perturbations across all coordinates simultaneously
             # explore the degenerate face far more broadly than axis-aligned
@@ -1186,29 +1179,21 @@ def _find_all_solutions_lp(
                 )
                 _consider(solve(c_rand))
                 if candidates and fractional_bound is not None:
-                    best_found = max(candidates.values())
-                    if np.isclose(best_found, fractional_bound, atol=0.001):
+                    if np.isclose(best_found(), fractional_bound, atol=0.001):
                         break
 
     if not candidates:
         # No solve produced a *feasible* rounding within the search budget.
         # The codebase assumes that at least one policy will always be
-        # returned, so fall back to the plain argmax rounding of the
-        # unperturbed solution, unverified. This can only be reached when
-        # every verified search attempt failed, so it's a rare last resort:
-        # better to hand back a possibly-imperfect policy than to crash
-        # every caller that indexes into an empty list.
-        if res_unperturbed.x is not None:
-            pi_opt, x_det = _round_occupancy(res_unperturbed.x, n_states)
-            fallback_reward = -1 * (np.asarray(c) @ x_det)
-            # logging.warning(
-            #     "_find_all_solutions_lp found no verified-feasible "
-            #     "deterministic policy; falling back to an unverified "
-            #     "rounding of the LP solution (reward %s, LP bound %s).",
-            #     fallback_reward,
-            #     fractional_bound,
-            # )
-            return [pi_opt], fallback_reward
+        # returned, so fall back to the plain rounding of the unperturbed
+        # solution, unverified. This can only be reached when every verified
+        # search attempt failed, so it's a rare last resort: better to hand
+        # back a possibly-imperfect policy than to crash every caller that
+        # indexes into an empty list.
+        fallback = round_policy(res_unperturbed, verify=False)
+        if fallback is not None:
+            policy, fallback_reward = fallback
+            return [policy], fallback_reward
 
         logging.warning(
             "_find_all_solutions_lp: the LP itself is infeasible even "
@@ -1217,16 +1202,15 @@ def _find_all_solutions_lp(
         )
         return [], -1 * np.inf
 
-    best_reward = max(candidates.values())
+    best_reward = best_found()
     best_policies = [
-        np.array(pi)
-        for pi, reward in candidates.items()
+        policy
+        for policy, reward in candidates.values()
         if np.isclose(reward, best_reward, atol=0.001)
     ]
 
-    logging.debug(f"\nBest Reward:\t {best_reward}")
-    logging.debug("\nOptimal policies:")
-    for pi in best_policies:
-        logging.debug(f"\t{np.round(pi, 2)}")
+    logging.debug("Best Reward:\t%s", best_reward)
+    for policy in best_policies:
+        logging.debug("Optimal policy:\t%s", policy)
 
     return best_policies, best_reward

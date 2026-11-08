@@ -3087,6 +3087,7 @@ class _OptDebiasStepLogger:
         self.step += 1
 
 
+@single_threaded_blas
 def optimize_weights(
     wi,
     feat_obj_set,
