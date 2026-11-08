@@ -110,9 +110,7 @@ common:
     - [demo_balanced_redlining, 0.2]
     # - [demo_perfectly_balanced_redlining, 0.2]
     - [demo_noise_bias, 0.2]
-    # - [demo_corruption_bias, CatBoost, 0.0001, gaussian, 1.0]
-    - [demo_corruption_bias, CatBoost, 0.001, gaussian, 1.0]
-    # - [demo_corruption_bias, CatBoost, 0.01, gaussian, 1.0]
+    - [demo_corruption_bias, CatBoost, 0.01, gaussian, 1.0]
 
   # Fairness Reward Weight Optimization's training adjustments (see
   # configs/base.yaml).
