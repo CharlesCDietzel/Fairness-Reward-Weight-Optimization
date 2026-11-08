@@ -230,6 +230,7 @@ class ClassificationMDP:
 
         # Compute `mu0` (initial state probabilities)
         logging.debug("Computing b_eq ...")
+        state_counts = self.reduced_state_df_["count"].to_numpy()
         self.reduced_state_df_["mu0"] = (
             self.reduced_state_df_["count"] / self.reduced_state_df_["count"].sum()
         )
@@ -288,6 +289,7 @@ class ClassificationMDP:
             state_groups = np.arange(self.n_states_)
         self.reduced_lp_ = _ReducedLP(
             mu0=self.reduced_state_df_["mu0"].to_numpy(dtype=float),
+            state_counts=state_counts,
             gamma=self.gamma,
             state_groups=state_groups,
         )
@@ -377,8 +379,13 @@ class ClassificationMDP:
             Optimal policies.
         """
         reduced_lp = self.reduced_lp_
-        if reduced_lp.reference_costs is None:
-            reduced_lp.reference_costs = self._reference_costs()
+        if not reduced_lp.prepared:
+            reduced_lp.prepare(
+                splits=[
+                    split for obj in self.obj_set.objectives for split in obj.to_splits()
+                ],
+                reference_costs=self._reference_costs(),
+            )
 
         # Find the best policy/reward of all the opt_problems
         best_policies_best_rewards = []
@@ -767,6 +774,32 @@ class _ReducedLP:
     given it dropped the `-gamma * mu0` terms of `A_eq` when gamma is ~1e-9,
     which shifted it by ~1e-9; see `check_constraints()`.)
 
+    Merging parallel columns
+    ------------------------
+    Group `g`'s column of the reduced LP (its entries of `T.T @ c` and of
+    `A_ub @ T`, for the `c` and `A_ub` of every objective split) is the sum,
+    over its states, of each state's occupancy times its "profile": how the
+    split's coefficients change when the state predicts 1 instead of 0. The
+    objectives' coefficients are per unit of occupancy and depend only on a
+    state's z, y and action, so there are only a handful of profiles. Groups
+    made of the same profiles, with state counts in the same ratio (e.g. one
+    y=0 sample and no y=1 sample), have exactly parallel columns, and form a
+    "class". The LP only sees how much of a class's mass predicts 1, not which
+    of its groups do, so it is solved with one variable `r[k]` in [0, 1] per
+    class instead of one per group. Its column is the sum of its groups'.
+    This is exact, and makes the LP far smaller (e.g. Adult's ~8000 groups
+    make ~300 classes).
+
+    A solution `r` is turned back into one of the group LP (`p`) by giving
+    each class's groups action 1 in a fixed order, the order of their group
+    index, until the fraction `r[k]` of the class's mass has it. That leaves
+    at most one group of each class with a fractional `p`, like a vertex of
+    the group LP. Which of a class's groups get action 1 doesn't change the
+    LP's objective or constraints at all, so this is only how the many
+    equally optimal policies are told apart; a fixed order makes the choice a
+    function of `r` alone, and as `r[k]` grows, the groups predicting 1 only
+    ever gain members.
+
     Warm starts
     -----------
     Only `c` depends on the reward weights. Each optimization problem (one
@@ -775,8 +808,7 @@ class _ReducedLP:
     scratch for the costs of equal reward weights (`reference_costs`), and
     every later solve of it starts from that solve's optimal basis. Starting
     from a fixed basis, rather than from the previous solve's, matters:
-    the LPs often have many optimal solutions (when a fairness constraint is
-    active, whole classes of groups are tied), and which one the simplex
+    the LPs often have many optimal solutions, and which one the simplex
     method returns depends on where it starts. Starting every solve from the
     same basis makes the solution, and so the policy, a function of the
     reward weights alone, whatever was solved before. The reference basis is
@@ -788,6 +820,8 @@ class _ReducedLP:
     ----------
     mu0 : numpy.array<float>, len(n_states)
         Initial state probabilities.
+    state_counts : numpy.array<int>, len(n_states)
+        The number of samples of each state, which `mu0` is proportional to.
     gamma : float
         The discount factor.
     state_groups : numpy.array<int>, len(n_states)
@@ -796,18 +830,24 @@ class _ReducedLP:
 
     Attributes
     ----------
-    reference_costs : dict<str, numpy.array<float>> or None
-        The cost vector of each optimization problem, by name, for equal
-        reward weights. Set by the MDP before the first solve.
+    prepared : bool
+        Whether `prepare()` has been called, as it must be before solving.
+    n_classes : int
+        The number of classes, i.e. of variables of the LPs solved. Set by
+        `prepare()`.
     """
 
-    def __init__(self, mu0, gamma, state_groups):
+    def __init__(self, mu0, state_counts, gamma, state_groups):
         n_states = len(mu0)
         n_cols = 2 * n_states
         _, groups = np.unique(state_groups, return_inverse=True)
         self.n_states = n_states
         self.n_groups = int(groups.max()) + 1 if n_states else 0
         self.state_groups = groups
+        self.state_counts = np.asarray(state_counts, dtype=np.int64)
+        assert np.allclose(
+            mu0, self.state_counts / max(self.state_counts.sum(), 1), rtol=1e-12
+        ), "mu0 is not proportional to the state counts"
         occupancy = np.asarray(mu0, dtype=float) / (1 - gamma)
         self.x0 = np.zeros(n_cols)
         self.x0[0::2] = occupancy
@@ -816,8 +856,7 @@ class _ReducedLP:
             (np.r_[-occupancy, occupancy], (action_cols, np.r_[groups, groups])),
             shape=(n_cols, self.n_groups),
         )
-        self.T_t = self.T.T.tocsr()
-        self.reference_costs = None
+        self.prepared = False
         self._models = {}
 
     def check_constraints(self, A_eq, b_eq, atol=1e-8):
@@ -838,6 +877,93 @@ class _ReducedLP:
             f" reduction, but A_eq has {n_tied_rows} action equality rows"
         )
 
+    def prepare(self, splits, reference_costs):
+        """
+        Merges the groups into classes (see the class docstring), and sets
+        the costs the warm starts come from. Must be called once, before
+        solving.
+
+        Parameters
+        ----------
+        splits : list<ObjectiveSplit>
+            Every split of every objective, fit to the MDP: everything an
+            optimization problem's `c` and `A_ub` are made of.
+        reference_costs : dict<str, numpy.array<float>>
+            The cost vector of each optimization problem, by name, for equal
+            reward weights.
+        """
+        # Each state's profile: how every split's coefficients change when it
+        # predicts 1 instead of 0. Coefficients computed the same way are
+        # exactly equal, so profiles are told apart exactly.
+        vectors = []
+        for split in splits:
+            vectors.append(np.asarray(split.c, dtype=float))
+            if split.A_ub is not None:
+                vectors.extend(np.atleast_2d(np.asarray(split.A_ub, dtype=float)))
+        profile_matrix = np.stack([v[1::2] - v[0::2] for v in vectors], axis=1)
+        _, profiles = np.unique(profile_matrix, axis=0, return_inverse=True)
+        profiles = profiles.ravel()
+
+        # A group's class: its profiles, with its state counts divided by
+        # their greatest common divisor. Its column is that divisor (its
+        # "weight") times the class's per-weight column.
+        members = [[] for _ in range(self.n_groups)]
+        for state, group in enumerate(self.state_groups):
+            members[group].append((int(profiles[state]), int(self.state_counts[state])))
+        class_ids = {}
+        group_class = np.empty(self.n_groups, dtype=np.int64)
+        group_weight = np.empty(self.n_groups, dtype=float)
+        for group, group_members in enumerate(members):
+            divisor = np.gcd.reduce([count for _, count in group_members])
+            key = tuple(sorted((p, count // divisor) for p, count in group_members))
+            group_class[group] = class_ids.setdefault(key, len(class_ids))
+            group_weight[group] = divisor
+        n_classes = len(class_ids)
+
+        merge = csr_array(
+            (np.ones(self.n_groups), (np.arange(self.n_groups), group_class)),
+            shape=(self.n_groups, n_classes),
+        )
+        self.T_class = (self.T @ merge).tocsr()
+        self.T_class_t = self.T_class.T.tocsr()
+        self.n_classes = n_classes
+        self.class_weight = np.bincount(group_class, weights=group_weight, minlength=n_classes)
+
+        # The fill order: by class, then group index. `_fill_before` is how
+        # much of its class's weight comes before each group in it.
+        order = np.lexsort((np.arange(self.n_groups), group_class))
+        weights = group_weight[order]
+        class_start = np.r_[0, np.cumsum(self.class_weight)[:-1]]
+        self._fill_order = order
+        self._fill_class = group_class[order]
+        self._fill_weight = weights
+        self._fill_before = np.cumsum(weights) - weights - class_start[self._fill_class]
+
+        # Every group's column must be its weight times its class's column
+        # per unit of weight.
+        group_columns = self.T.T @ np.stack(vectors, axis=1)
+        class_columns = self.T_class_t @ np.stack(vectors, axis=1)
+        expected = (
+            class_columns[group_class] / self.class_weight[group_class, None]
+        ) * group_weight[:, None]
+        scale = np.abs(group_columns).max(initial=0) + 1e-300
+        assert np.abs(group_columns - expected).max(initial=0) <= 1e-9 * scale, (
+            "groups merged into a class don't have parallel columns"
+        )
+
+        self.reference_costs = reference_costs
+        self.prepared = True
+
+    def _groups_of_classes(self, r):
+        """The group LP's solution `p` for the class LP's solution `r`."""
+        r = np.clip(r, 0.0, 1.0)
+        target = r[self._fill_class] * self.class_weight[self._fill_class]
+        p = np.empty(self.n_groups)
+        p[self._fill_order] = np.clip(
+            (target - self._fill_before) / self._fill_weight, 0.0, 1.0
+        )
+        return p
+
     def solver(self, problem, method="highs"):
         """
         Returns `solve(c)`, which solves `problem` for the costs `c` (of the
@@ -850,6 +976,7 @@ class _ReducedLP:
         problem's constraints depend only on its splits, which its name
         names, and not on the reward weights.
         """
+        assert self.prepared, "prepare() must be called before solving"
         if method not in _HIGHS_METHODS:
             raise ValueError(
                 f"Unknown LP method {method!r}; options are {list(_HIGHS_METHODS)}."
@@ -858,7 +985,7 @@ class _ReducedLP:
         if key not in self._models:
             self._models[key] = self._build_model(problem, method)
         highs, basis, warm = self._models[key]
-        index = np.arange(self.n_groups, dtype=np.int32)
+        index = np.arange(self.n_classes, dtype=np.int32)
 
         def solve(c):
             c = np.asarray(c, dtype=float)
@@ -867,15 +994,15 @@ class _ReducedLP:
             # depend on what was solved before), then start from the
             # reference basis.
             highs.clearSolver()
-            highs.changeColsCost(self.n_groups, index, self.T_t @ c)
+            highs.changeColsCost(self.n_classes, index, self.T_class_t @ c)
             if warm and basis is not None:
                 highs.setBasis(basis)
             highs.run()
             if highs.getModelStatus() != highspy.HighsModelStatus.kOptimal:
                 return SimpleNamespace(x=None, fun=None)
-            p = np.asarray(highs.getSolution().col_value)
+            r = np.asarray(highs.getSolution().col_value)
             return SimpleNamespace(
-                x=self.x0 + self.T @ p,
+                x=self.x0 + self.T @ self._groups_of_classes(r),
                 fun=highs.getInfo().objective_function_value + c @ self.x0,
             )
 
@@ -895,11 +1022,11 @@ class _ReducedLP:
         highs = highspy.Highs()
         highs.setOptionValue("output_flag", False)
         highs.setOptionValue("solver", solver_option)
-        n = self.n_groups
+        n = self.n_classes
         highs.addVars(n, np.zeros(n), np.ones(n))
         if problem.A_ub is not None and len(problem.A_ub) > 0:
             A_ub = np.atleast_2d(np.asarray(problem.A_ub, dtype=float))
-            E = csr_array(A_ub @ self.T)
+            E = csr_array(A_ub @ self.T_class)
             b = np.asarray(problem.b_ub, dtype=float) - A_ub @ self.x0
             highs.addRows(
                 E.shape[0],
@@ -913,9 +1040,10 @@ class _ReducedLP:
 
         basis = None
         if warm:
-            assert self.reference_costs is not None, "reference_costs is not set"
             reference_c = np.asarray(self.reference_costs[problem.name], dtype=float)
-            highs.changeColsCost(n, np.arange(n, dtype=np.int32), self.T_t @ reference_c)
+            highs.changeColsCost(
+                n, np.arange(n, dtype=np.int32), self.T_class_t @ reference_c
+            )
             highs.run()
             if highs.getModelStatus() == highspy.HighsModelStatus.kOptimal:
                 basis = highs.getBasis()
