@@ -103,9 +103,11 @@ from frwo.pause import is_alive, read_json, remove_file, write_json
 OBJECTIVE = "objective"
 
 # The `run_experiment_trial()` summary key the objective is the mean of, by
-# default. Validation, so that the test split stays untouched by tuning; sum
-# aggregated absolute subdominance, which is what Fairness Reward Weight
-# Optimization's own `opt_debias` weight search minimizes.
+# default. Validation, so that the test split stays untouched by tuning (it is
+# the same in every trial, and no trial trains or validates on its rows; see
+# `experiment_utils._draw_test_split()`); sum aggregated absolute
+# subdominance, which is what Fairness Reward Weight Optimization's own
+# `opt_debias` weight search minimizes.
 DEFAULT_OBJECTIVE_KEY = "sum_abs_subdominance_val"
 
 # Set for each trial, and read by `wandb.init()`. A child process that inherits

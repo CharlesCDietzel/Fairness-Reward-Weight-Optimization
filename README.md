@@ -189,7 +189,10 @@ skipped.
 
 Every sweep is a Bayesian search of 40 runs, and every sweep minimizes the
 same objective, the technique's mean validation subdominance
-(`sum_abs_subdominance_val`). The test split is never used for tuning. Fairness
+(`sum_abs_subdominance_val`). The test split is never used for tuning: it is
+drawn once per dataset and is the same in every trial, and each trial splits
+only the remaining rows into its train and validation splits, so no tuning
+trial trains or validates on a row any trial is tested on. Fairness
 Reward Weight Optimization is scored on its weight-adjusted runs only, not on
 the unadjusted weights it starts from. If any of a trial's runs fail, the
 trial can't be the best one, and the search treats it as the worst result so
@@ -363,7 +366,8 @@ same whether it runs alone (`--config`) or after the others. Each bias type
 also draws its random numbers from a seed of its own, so a config's unbiased
 runs are identical to `main.yaml`'s whatever demo bias types it lists, and each
 bias type's results don't depend on which other bias types are listed. A
-dataset bias type can still change which data split is chosen, though.
+dataset bias type can still change which train/validation split is chosen,
+though; the test split is the same in every config.
 
 Every technique whose training is random (FRWO's `opt_debias` weight search,
 the Superhuman Fairness baselines and the fair log-loss baselines) is run

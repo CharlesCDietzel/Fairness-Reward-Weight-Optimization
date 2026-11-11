@@ -60,9 +60,11 @@ EXPERIMENT_FILE_KEYS = ("SELECTED_DATASETS", "EXPERT_ALGOS", "common", "experime
 NAME_KEYS = ("EXPERIMENT_NAME", "DATASET")
 
 # Settings an experiment config may not change from the base: those that pick
-# each trial's data split and seed its random draws (see
-# `experiment_utils._data_split_seed()` and `_baseline_seed()`). They are what
-# the hyperparameters were tuned on, so every experiment config shares them.
+# the dataset, its held-out test split and each trial's train/validation split,
+# and seed the random draws (see `experiment_utils.load_dataset()`,
+# `_draw_data_split()` and `_baseline_seed()`). They are what the
+# hyperparameters were tuned on, and they keep the test split held out from
+# that tuning, so every experiment config shares them.
 LOCKED_KEYS = (
     "RANDOM_SEED",
     *NAME_KEYS,

@@ -2,12 +2,13 @@ import logging
 import numpy as np
 import pandas as pd
 from imblearn.under_sampling import RandomUnderSampler
+from sklearn.utils import check_random_state
 from fairlearn.datasets import fetch_adult, fetch_boston
 from folktables import ACSDataSource, ACSIncome
 from frwo.utils import *
 
 
-def generate_dataset(dataset_name, n_samples: int | None = None):
+def generate_dataset(dataset_name, n_samples: int | None = None, random_state=None):
     """
     Helper method that returns a dataset based on the specified label.
 
@@ -17,6 +18,10 @@ def generate_dataset(dataset_name, n_samples: int | None = None):
         Name of the dataset.
     n_samples : int | None
         Number of samples to return from the dataset. If None, use the whole dataset.
+    random_state : int, numpy.random.RandomState or None, default None
+        What the dataset's random draws -- sampling `n_samples` rows, and
+        undersampling a class -- are made from. None draws from the global
+        numpy generator, so the dataset depends on what was drawn before it.
 
     Returns
     -------
@@ -29,14 +34,22 @@ def generate_dataset(dataset_name, n_samples: int | None = None):
         constructing sklearn pipelines.
     """
     if dataset_name == "Adult":
-        X, y, feature_types = generate_adult_dataset(n_samples)
+        X, y, feature_types = generate_adult_dataset(
+            n_samples, random_state=random_state
+        )
     elif dataset_name == "COMPAS":
-        X, y, feature_types = generate_compas_dataset(n_samples)
+        X, y, feature_types = generate_compas_dataset(
+            n_samples, random_state=random_state
+        )
     elif dataset_name == "Boston":
-        X, y, feature_types = generate_boston_housing_dataset(n_samples)
+        X, y, feature_types = generate_boston_housing_dataset(
+            n_samples, random_state=random_state
+        )
     elif "ACSIncome__" in dataset_name:
         state = dataset_name[-2:]
-        X, y, feature_types = generate_acs_income(n_samples, state=state)
+        X, y, feature_types = generate_acs_income(
+            n_samples, state=state, random_state=random_state
+        )
     else:
         raise ValueError(f"Unrecognized dataset name: {dataset_name}")
 
@@ -47,6 +60,7 @@ def generate_adult_dataset(
     n: int | None = None,
     z_col="is_race_white",
     y_col="is_income_over_50k",
+    random_state=None,
 ):
     """
     Wrapper function for generating a sample of the adult dataset. This
@@ -61,6 +75,8 @@ def generate_adult_dataset(
         The column to use as the protected attribute. Must be binary.
     y_col : str, default 'is_income_over_50k'
         The column to use as the target variable. Must be binary.
+    random_state : int, numpy.random.RandomState or None, default None
+        What the random draws are made from. See `generate_dataset()`.
 
     Returns
     -------
@@ -78,8 +94,9 @@ def generate_adult_dataset(
     use_legacy_str_dtype(df)
 
     # Take sample if possible
+    rng = check_random_state(random_state)
     if n is not None and n < len(df):
-        df = df.sample(n)
+        df = df.sample(n, random_state=rng)
 
     # Common transformations
     df["is_income_over_50k"] = df["income"] == ">50K"
@@ -121,7 +138,7 @@ def generate_adult_dataset(
     # doing IRL.
     #
     # Balance the positive and negative classes
-    rus = RandomUnderSampler(sampling_strategy=0.42)
+    rus = RandomUnderSampler(sampling_strategy=0.42, random_state=rng)
     X, y = rus.fit_resample(X, y)
 
     feature_types = {
@@ -158,6 +175,7 @@ def generate_compas_dataset(
     z_col="is_race_white",
     y_col="is_recid",
     filepath="./data/compas/cox-violent-parsed.csv",
+    random_state=None,
 ):
     """
     Wrapper function for generating a sample of the Compas dataset. This
@@ -174,6 +192,8 @@ def generate_compas_dataset(
         The column to use as the protected attribute. Must be binary.
     y_col : str, default 'is_recid'
         The column to use as the target variable. Must be binary.
+    random_state : int, numpy.random.RandomState or None, default None
+        What the random draws are made from. See `generate_dataset()`.
 
     Returns
     -------
@@ -195,8 +215,9 @@ def generate_compas_dataset(
     use_legacy_str_dtype(df)
 
     # Take sample if possible
+    rng = check_random_state(random_state)
     if n is not None and n < len(df):
-        df = df.sample(n)
+        df = df.sample(n, random_state=rng)
 
     # Filter out records where we don't know their compas risk score
     df = df.query("is_recid >= 0").copy()
@@ -278,7 +299,7 @@ def generate_compas_dataset(
     return X, y, feature_types
 
 
-def generate_boston_housing_dataset(n: int | None = None):
+def generate_boston_housing_dataset(n: int | None = None, random_state=None):
     """
     Wrapper function for generating a sample of the boston housing dataset.
 
@@ -286,6 +307,8 @@ def generate_boston_housing_dataset(n: int | None = None):
     ---------
     n : int, default None
         Number of records to sample from dataset. If None, use the whole dataset.
+    random_state : int, numpy.random.RandomState or None, default None
+        What the random draws are made from. See `generate_dataset()`.
 
     Returns
     -------
@@ -304,10 +327,11 @@ def generate_boston_housing_dataset(n: int | None = None):
     use_legacy_str_dtype(df)
 
     # Take sample if possible
+    rng = check_random_state(random_state)
     if n is not None and n < len(df):
-        df = df.sample(n)
+        df = df.sample(n, random_state=rng)
     if n is not None and n > len(df):
-        df = df.sample(n, replace=True)
+        df = df.sample(n, replace=True, random_state=rng)
 
     # Specify the protected attribute `z`
     # Median value for Z
@@ -336,7 +360,7 @@ def generate_boston_housing_dataset(n: int | None = None):
     X = df.drop(columns="MEDV")
 
     # Balance the positive and negative classes
-    rus = RandomUnderSampler(sampling_strategy=1)
+    rus = RandomUnderSampler(sampling_strategy=1, random_state=rng)
     X, y = rus.fit_resample(X, y)
     feature_types = {
         "boolean": [
@@ -369,7 +393,7 @@ def generate_boston_housing_dataset(n: int | None = None):
     return X, y, feature_types
 
 
-def generate_acs_income(n: int | None = None, state=None):
+def generate_acs_income(n: int | None = None, state=None, random_state=None):
     """
     Wrapper function for generating a sample of the folktable ACSIncome
     dataset.
@@ -383,6 +407,8 @@ def generate_acs_income(n: int | None = None, state=None):
         Number of records to sample from dataset. If None, use the whole dataset.
     state : str
         The US state to use.
+    random_state : int, numpy.random.RandomState or None, default None
+        What the random draws are made from. See `generate_dataset()`.
 
     Returns
     -------
@@ -404,10 +430,11 @@ def generate_acs_income(n: int | None = None, state=None):
     use_legacy_str_dtype(df)
 
     # Take sample if possible
+    rng = check_random_state(random_state)
     if n is not None and n < len(df):
-        df = df.sample(n)
+        df = df.sample(n, random_state=rng)
     if n is not None and n > len(df):
-        df = df.sample(n, replace=True)
+        df = df.sample(n, replace=True, random_state=rng)
 
     # Specify the protected attribute `z`
     z_col = "RAC1P"

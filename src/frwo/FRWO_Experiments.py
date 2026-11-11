@@ -378,10 +378,7 @@ def run_experiments(
 
                 experiment_rng_state = capture_rng_state()
 
-                source_X, source_y, source_feature_types = generate_dataset(
-                    exp_info["DATASET"],
-                    n_samples=exp_info["N_DATASET_SAMPLES"],
-                )
+                source_X, source_y, source_feature_types = load_dataset(exp_info)
 
                 for f in source_feature_types["categoric"]:
                     # .map(str) (rather than .astype(str)) matches Pandas < 3

@@ -1082,7 +1082,10 @@ def _superhuman_config(exp_info):
 # paused and resumed, and enabling one technique cannot shift another's draws.
 #
 # A seed depends on the trial, so that each trial's draws differ and the
-# results converge to a meaningful average over the trials. It never depends on
+# results converge to a meaningful average over the trials. The two exceptions
+# are the dataset (see `load_dataset()`) and its test split (see
+# `_draw_test_split()`), which are the same in every trial, so that the test
+# split stays held out from hyperparameter tuning. A seed never depends on
 # the conditions an experiment compares -- the expert, the bias type, the
 # training adjustment, or which `opt_debias` optimizer is used -- so that the
 # runs compared within a trial share their random numbers, and differ only by
@@ -2178,12 +2181,34 @@ def _build_objective_sets(exp_info):
     return feat_obj_set, perf_obj_set
 
 
+def load_dataset(exp_info):
+    """
+    Load the experiment's dataset.
+
+    Its random draws (see `generate_dataset()`) are made from a seed derived
+    from the experiment alone rather than from the global numpy generator, so
+    the dataset comes out the same however many experiments ran before it in
+    the same process: in a hyperparameter tuning trial, which runs one dataset
+    on its own, and in an experiment config, which runs several in a row. The
+    test split picks its rows by position (see `_draw_test_split()`), so it
+    holds the same rows out of tuning and of every experiment only because
+    they all load the same dataset.
+
+    Returns
+    -------
+    X, y, feature_types
+        As `generate_dataset()` returns them.
+    """
+    return generate_dataset(
+        exp_info["DATASET"],
+        n_samples=exp_info["N_DATASET_SAMPLES"],
+        random_state=_derived_seed(exp_info, "dataset"),
+    )
+
+
 def _load_or_generate_dataset(exp_info, X, y, feature_types):
     if X is None or y is None or feature_types is None:
-        return generate_dataset(
-            exp_info["DATASET"],
-            n_samples=exp_info["N_DATASET_SAMPLES"],
-        )
+        return load_dataset(exp_info)
     return X, y, feature_types
 
 
@@ -2346,9 +2371,22 @@ def _bias_dataset(exp_info, X, y, feature_types, bias_type):
 DEFAULT_DATA_SPLIT_FRACTIONS = (0.60, 0.20, 0.20)
 
 
+def _test_split_seed(exp_info):
+    """
+    The seed of the dataset's test split.
+
+    Unlike every other derived seed, it leaves out the trial: the test split
+    is drawn once, and every trial of the experiment and of its
+    hyperparameter tuning holds out the same rows. See `_draw_test_split()`.
+    """
+    # `np.random.RandomState` takes 32-bit seeds.
+    return _derived_seed(exp_info, "test_split")
+
+
 def _data_split_seed(exp_info, trial_i):
     """
-    Derive the seed of a trial's data split from what makes the trial unique.
+    Derive the seed of a trial's train/validation split from what makes the
+    trial unique.
 
     Like `_baseline_seed()`, this keeps the split off the global numpy random
     state, so however many candidate splits `_draw_data_split()` draws, no
@@ -2372,10 +2410,10 @@ def _bias_type_random_state(exp_info, bias_type, trial_i, stage):
     on it -- every later unbiased run would draw differently, so an experiment
     config's unbiased results would depend on which bias types it lists. With
     this, they are those of a config that lists none, as long as both draw the
-    same data split (a dataset bias type can change which one is chosen; see
-    `_draw_data_split()`). Each bias type's own draws are likewise independent
-    of which other bias types are listed. `()` is left on the global
-    generators.
+    same training and validation splits (a dataset bias type can change which
+    are chosen; see `_draw_data_split()`; the test split is always the same).
+    Each bias type's own draws are likewise independent of which other bias
+    types are listed. `()` is left on the global generators.
 
     Like `_data_split_seed()`, the seed leaves the expert out, so that every
     expert's demonstrations are biased alike.
@@ -2520,19 +2558,140 @@ def _data_split_imbalance(datasets, split_idxs):
     return float(imbalance)
 
 
+def _data_split_fractions(exp_info):
+    """The `(train, val, test)` fractions of the dataset, checked."""
+    fractions = exp_info.get("DATA_SPLIT_FRACTIONS", DEFAULT_DATA_SPLIT_FRACTIONS)
+    if not np.isclose(sum(fractions), 1.0):
+        raise ValueError(
+            f"exp_info['DATA_SPLIT_FRACTIONS'] must sum to 1, got {tuple(fractions)}."
+        )
+    return fractions
+
+
+def _draw_balanced_split(exp_info, datasets, draw_candidate, what):
+    """
+    Draw candidate splits until one divides `datasets` evenly enough.
+
+    Up to `exp_info["DATA_SPLIT_MAX_TRIES"]` candidates are drawn by
+    `draw_candidate()`, and the first whose `_data_split_imbalance()` over
+    `datasets` is at most `exp_info["DATA_SPLIT_MAX_IMBALANCE"]` is taken --
+    or, if none is, the most balanced one.
+
+    Parameters
+    ----------
+    datasets : iterable<tuple>
+        The `(X, y)` pairs whose imbalance the split is chosen by.
+    draw_candidate : callable
+        Draws one candidate split: a tuple of row index arrays.
+    what : str
+        What is being split, for the log.
+
+    Returns
+    -------
+    split_idxs : tuple<numpy.ndarray>
+        The chosen split's row indices.
+    imbalance : float
+        Its `_data_split_imbalance()`.
+    """
+    max_tries = exp_info.get("DATA_SPLIT_MAX_TRIES", 1)
+    if max_tries < 1:
+        raise ValueError(
+            f"exp_info['DATA_SPLIT_MAX_TRIES'] must be at least 1, got {max_tries}."
+        )
+    max_imbalance = exp_info.get("DATA_SPLIT_MAX_IMBALANCE", np.inf)
+
+    best_split_idxs, best_imbalance = None, np.inf
+    for try_i in range(max_tries):
+        split_idxs = draw_candidate()
+        imbalance = _data_split_imbalance(datasets, split_idxs)
+        if best_split_idxs is None or imbalance < best_imbalance:
+            best_split_idxs, best_imbalance = split_idxs, imbalance
+        if imbalance <= max_imbalance:
+            logging.info(
+                f"{what} {try_i + 1} of at most {max_tries} accepted, with group"
+                f" rate imbalance {imbalance:.4f}."
+            )
+            break
+    else:
+        logging.info(
+            f"No {what.lower()} of {max_tries} had a group rate imbalance of at"
+            f" most {max_imbalance}; using the most balanced one, with imbalance"
+            f" {best_imbalance:.4f}."
+        )
+    return best_split_idxs, best_imbalance
+
+
+def _draw_test_split(exp_info, X, y):
+    """
+    Draw the test split: the rows every trial holds out.
+
+    The test split is drawn once per dataset, from `_test_split_seed()`, which
+    leaves out the trial, so it is the same in every trial. Each trial then
+    splits only the remaining rows into its training and validation splits
+    (see `_draw_data_split()`). Hyperparameter tuning chooses by the
+    validation results of its trials, so a test split redrawn every trial
+    would overlap the rows other trials trained and validated on, and the test
+    results would not be held out from tuning. A fixed one never enters
+    tuning, as training or as validation data.
+
+    It is chosen like the trials' splits are (see `_draw_balanced_split()`),
+    for how evenly it and the remaining rows divide the unbiased dataset. The
+    dataset bias types are left out of that choice: their biased datasets are
+    drawn anew every trial, and the test split must not depend on the trial,
+    nor on which bias types an experiment config lists. So every experiment
+    config holds out the same rows.
+
+    Parameters
+    ----------
+    X : pandas.DataFrame
+        The unbiased dataset's inputs.
+    y : pandas.Series
+        The unbiased dataset's labels.
+
+    Returns
+    -------
+    rest_idxs : numpy.ndarray
+        The row indices the trials split into training and validation.
+    test_idxs : numpy.ndarray
+        The row indices of the test split.
+    """
+    _, _, test_frac = _data_split_fractions(exp_info)
+    stratify_labels = _data_split_stratify_labels(exp_info, X, y)
+    random_state = np.random.RandomState(_test_split_seed(exp_info))
+    idxs = np.arange(len(X))
+
+    def draw_candidate():
+        return tuple(
+            train_test_split(
+                idxs,
+                test_size=test_frac,
+                stratify=stratify_labels,
+                random_state=random_state,
+            )
+        )
+
+    split_idxs, _ = _draw_balanced_split(
+        exp_info, [(X, y)], draw_candidate, "Test split"
+    )
+    return split_idxs
+
+
 def _draw_data_split(exp_info, X, y, datasets, trial_i):
     """
     Draw the train/validation/test split every bias type of a trial shares.
 
+    The test split is the dataset's fixed one (see `_draw_test_split()`); the
+    trial splits the remaining rows into its training and validation splits.
+
     So that a policy scoring worse on the test split than on the training
     split reflects the policy rather than a difference between the splits,
-    the split is chosen for how evenly the protected groups and their labels
-    are distributed across it, in every dataset it splits (see
-    `_data_split_imbalance()`). Up to `exp_info["DATA_SPLIT_MAX_TRIES"]`
-    candidate splits are drawn, and the first whose imbalance is at most
-    `exp_info["DATA_SPLIT_MAX_IMBALANCE"]` is taken -- or, if none is, the
-    most balanced one. This only needs the data, so no expert is fit for a
-    rejected split.
+    the training and validation splits are chosen for how evenly the
+    protected groups and their labels are distributed across all three
+    splits, in every dataset they split (see `_draw_balanced_split()`). This
+    only needs the data, so no expert is fit for a rejected split. The test
+    split can't adapt to a dataset bias type's biased labels, which are drawn
+    anew every trial, so those datasets come out less evenly split than the
+    unbiased one.
 
     The candidates are drawn from a generator seeded by `_data_split_seed()`,
     so the split is reproducible and leaves the global random state alone.
@@ -2555,57 +2714,23 @@ def _draw_data_split(exp_info, X, y, datasets, trial_i):
     imbalance : float
         Its `_data_split_imbalance()`.
     """
-    train_frac, val_frac, test_frac = exp_info.get(
-        "DATA_SPLIT_FRACTIONS", DEFAULT_DATA_SPLIT_FRACTIONS
-    )
-    if not np.isclose(train_frac + val_frac + test_frac, 1.0):
-        raise ValueError(
-            "exp_info['DATA_SPLIT_FRACTIONS'] must sum to 1, got"
-            f" {(train_frac, val_frac, test_frac)}."
-        )
-    max_tries = exp_info.get("DATA_SPLIT_MAX_TRIES", 1)
-    if max_tries < 1:
-        raise ValueError(
-            f"exp_info['DATA_SPLIT_MAX_TRIES'] must be at least 1, got {max_tries}."
-        )
-    max_imbalance = exp_info.get("DATA_SPLIT_MAX_IMBALANCE", np.inf)
+    train_frac, val_frac, _ = _data_split_fractions(exp_info)
+    rest_idxs, test_idxs = _draw_test_split(exp_info, X, y)
     stratify_labels = _data_split_stratify_labels(exp_info, X, y)
     random_state = np.random.RandomState(_data_split_seed(exp_info, trial_i))
 
-    idxs = np.arange(len(X))
-    best_split_idxs, best_imbalance = None, np.inf
-    for try_i in range(max_tries):
-        train_idxs, val_test_idxs = train_test_split(
-            idxs,
-            train_size=train_frac,
-            stratify=stratify_labels,
+    def draw_candidate():
+        train_idxs, val_idxs = train_test_split(
+            rest_idxs,
+            test_size=val_frac / (train_frac + val_frac),
+            stratify=None if stratify_labels is None else stratify_labels[rest_idxs],
             random_state=random_state,
         )
-        val_idxs, test_idxs = train_test_split(
-            val_test_idxs,
-            test_size=test_frac / (val_frac + test_frac),
-            stratify=(
-                None if stratify_labels is None else stratify_labels[val_test_idxs]
-            ),
-            random_state=random_state,
-        )
-        split_idxs = (train_idxs, val_idxs, test_idxs)
-        imbalance = _data_split_imbalance(datasets, split_idxs)
-        if best_split_idxs is None or imbalance < best_imbalance:
-            best_split_idxs, best_imbalance = split_idxs, imbalance
-        if imbalance <= max_imbalance:
-            logging.info(
-                f"Data split {try_i + 1} of at most {max_tries} accepted, with"
-                f" group rate imbalance {imbalance:.4f}."
-            )
-            break
-    else:
-        logging.info(
-            f"No data split of {max_tries} had a group rate imbalance of at most"
-            f" {max_imbalance}; using the most balanced one, with imbalance"
-            f" {best_imbalance:.4f}."
-        )
-    return best_split_idxs, best_imbalance
+        return train_idxs, val_idxs, test_idxs
+
+    return _draw_balanced_split(
+        exp_info, datasets, draw_candidate, "Train/validation split"
+    )
 
 
 def _split_dataset_and_generate_expert_demos(
@@ -2638,8 +2763,9 @@ def _split_dataset_and_generate_expert_demos(
 
     Every dataset is split along the same randomized indices, so the bias
     types differ from each other only by their bias and their results stay
-    comparable. Those indices are chosen by `_draw_data_split()`, for how
-    evenly every dataset is distributed across them.
+    comparable. Those indices are chosen by `_draw_data_split()`: the test
+    split is the same in every trial, and the training and validation splits
+    are chosen for how evenly every dataset is distributed across all three.
 
     Returns
     -------
@@ -2661,14 +2787,17 @@ def _split_dataset_and_generate_expert_demos(
 
     # One randomized split, shared by every bias type: the biased datasets
     # differ from each other only by their bias, so splitting them all along
-    # the same indices keeps their results comparable. It is chosen for how
-    # evenly it splits the unbiased dataset and every dataset bias type's
-    # biased copy; the demo bias types' datasets are the unbiased one.
+    # the same indices keeps their results comparable. Its test split is the
+    # dataset's fixed one, held out of every trial; its training and
+    # validation splits are chosen for how evenly the three split the unbiased
+    # dataset and every dataset bias type's biased copy. The demo bias types'
+    # datasets are the unbiased one.
     #
     # DATA_SPLIT_FRACTIONS sets the (train, val, test) fractions,
-    # DATA_SPLIT_STRATIFY what both splits are stratified by, and
-    # DATA_SPLIT_MAX_TRIES and DATA_SPLIT_MAX_IMBALANCE how hard
-    # _draw_data_split() looks for an even split.
+    # DATA_SPLIT_STRATIFY what the test split and each trial's
+    # train/validation split are stratified by, and DATA_SPLIT_MAX_TRIES and
+    # DATA_SPLIT_MAX_IMBALANCE how hard _draw_data_split() looks for even
+    # ones.
     logging.info("Drawing the train/validation/test split...")
     (train_idxs, val_idxs, test_idxs), _ = _draw_data_split(
         exp_info,
