@@ -161,7 +161,7 @@ ACSIncome__MA:
     tuned_against: null
   Fairness Reward Weight Optimization:
     values:
-      WEIGHT_ADJUST_LIST: [[opt_debias, optuna, GP, 200]]
+      WEIGHT_ADJUST_LIST: [[opt_debias, optuna, TPE, 200]]
       FRWO_CLF_N_ESTIMATORS: 100
       FRWO_CLF_MAX_DEPTH: 20
       FRWO_CLF_MIN_SAMPLES_LEAF: 20
@@ -226,7 +226,7 @@ ACSIncome__MS:
     tuned_against: null
   Fairness Reward Weight Optimization:
     values:
-      WEIGHT_ADJUST_LIST: [[opt_debias, pybobyqa, Multi-Start BOBYQA, 200]]
+      WEIGHT_ADJUST_LIST: [[opt_debias, optuna, TPE, 200]]
       FRWO_CLF_N_ESTIMATORS: 400
       FRWO_CLF_MAX_DEPTH: null
       FRWO_CLF_MIN_SAMPLES_LEAF: 2
