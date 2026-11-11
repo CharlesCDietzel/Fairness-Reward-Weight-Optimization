@@ -347,7 +347,9 @@ class FairLogLossBaseline:
         # matrix with an intercept column appended, and keeps only `theta`.
         design_intercept = np.hstack((design, np.ones((len(design), 1))))
         self.training_loss_ = float(
-            self.model_.compute_loss_grad(self.model_.theta, design_intercept, y_values)[0]
+            self.model_.compute_loss_grad(
+                self.model_.theta, design_intercept, y_values
+            )[0]
         )
         return self
 

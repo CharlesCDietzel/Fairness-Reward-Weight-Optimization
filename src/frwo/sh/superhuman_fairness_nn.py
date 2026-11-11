@@ -518,9 +518,9 @@ class SuperhumanFairnessNN:
            `phi_j - E[phi]` with the normalization fixed, whose `phi_j` is
            built from the sampled decisions in the same way.
         """
-        hinge = np.maximum(
-            self.alpha_ * (sample_loss - self.demo_losses_) + 1, 0
-        ).sum(axis=1)
+        hinge = np.maximum(self.alpha_ * (sample_loss - self.demo_losses_) + 1, 0).sum(
+            axis=1
+        )
         weight = (hinge - hinge.mean()) / self.num_of_demos_
 
         sampled = sample_matrix[self.pair_demo_, self.pair_row_].astype(np.int64)
@@ -630,13 +630,17 @@ class SuperhumanFairnessNN:
             # reaches `lr_decay_gamma_frac` of the number of features (both
             # can happen in the same iteration).
             if not lr_boosted:
-                self._set_learning_rate(self._get_learning_rate() * self.lr_boost_factor)
+                self._set_learning_rate(
+                    self._get_learning_rate() * self.lr_boost_factor
+                )
                 lr_boosted = True
             if (
                 gamma_sum >= self.lr_decay_gamma_frac * self.num_of_features
                 and not lr_decayed
             ):
-                self._set_learning_rate(self._get_learning_rate() / self.lr_boost_factor)
+                self._set_learning_rate(
+                    self._get_learning_rate() / self.lr_boost_factor
+                )
                 lr_decayed = True
 
             # Keep the model of the best iteration so far, the latest among

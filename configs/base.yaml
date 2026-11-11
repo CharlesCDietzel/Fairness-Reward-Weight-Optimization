@@ -127,9 +127,7 @@ common:
   # which can overstate it. See `_ReducedLP.true_reward_rounder()` and
   # `_ReducedLP.rounder()` in src/frwo/rl/clf_mdp.py. Like METHOD, it is not
   # tuned and changes the expert's policy (OptClfMDPPol) too, so it changes
-  # the demonstrations every technique is scored against. In paired TPE-200
-  # runs, true lowered Fairness Reward Weight Optimization's subdominance on
-  # COMPAS but raised it on Adult's validation and test splits.
+  # the demonstrations every technique is scored against.
   TRUE_REWARD_ROUNDING: false
   # The random forest that predicts `y` from `x` for the policies Fairness
   # Reward Weight Optimization learns. Those policies cannot observe `y`, so it

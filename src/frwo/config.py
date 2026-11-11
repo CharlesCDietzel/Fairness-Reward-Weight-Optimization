@@ -161,9 +161,13 @@ def discover_configs():
     then the rest by name.
     """
     if not MAIN_CONFIG_PATH.exists():
-        raise FileNotFoundError(f"The main experiment config {MAIN_CONFIG_PATH} is missing.")
+        raise FileNotFoundError(
+            f"The main experiment config {MAIN_CONFIG_PATH} is missing."
+        )
     others = sorted(
-        path for path in EXPERIMENT_CONFIG_DIR.glob("*.yaml") if path != MAIN_CONFIG_PATH
+        path
+        for path in EXPERIMENT_CONFIG_DIR.glob("*.yaml")
+        if path != MAIN_CONFIG_PATH
     )
     return [MAIN_CONFIG_PATH, *others]
 
@@ -296,7 +300,9 @@ def tuning_fingerprint(exp_info, tunable=None):
 def _check_file_keys(path, data, allowed):
     unknown = sorted(set(data) - set(allowed))
     if unknown:
-        raise ValueError(f"{path}: unknown top-level keys {unknown}. Allowed: {list(allowed)}.")
+        raise ValueError(
+            f"{path}: unknown top-level keys {unknown}. Allowed: {list(allowed)}."
+        )
 
 
 def _tuned_values(tuned, datasets, tunable):
@@ -510,9 +516,7 @@ def _apply_opt_debias_optimizer(weight_adjust_list, optimizer):
             " 'opt_debias' entry for it to apply to."
         )
     return tuple(
-        ("opt_debias", library, name, *entry[3:])
-        if entry[0] == "opt_debias"
-        else entry
+        ("opt_debias", library, name, *entry[3:]) if entry[0] == "opt_debias" else entry
         for entry in weight_adjust_list
     )
 
@@ -619,9 +623,7 @@ def resolve_tuned_values(exp_info, values):
     """
     return {
         "WEIGHT_ADJUST_LIST" if key == OPT_DEBIAS_OPTIMIZER else key: (
-            _to_list(
-                _apply_opt_debias_optimizer(exp_info["WEIGHT_ADJUST_LIST"], value)
-            )
+            _to_list(_apply_opt_debias_optimizer(exp_info["WEIGHT_ADJUST_LIST"], value))
             if key == OPT_DEBIAS_OPTIMIZER
             else value
         )
@@ -654,7 +656,8 @@ def check_tuning(config, plan, allow_untuned=False):
         f"{exp_info['DATASET']} / {algorithm}"
         for exp_info in selected
         for algorithm in exp_info["ALGORITHMS"]
-        if algorithm in tunable and algorithm not in applied.get(exp_info["DATASET"], {})
+        if algorithm in tunable
+        and algorithm not in applied.get(exp_info["DATASET"], {})
     ]
     if untuned:
         message = (

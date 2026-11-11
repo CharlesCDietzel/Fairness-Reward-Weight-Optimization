@@ -172,7 +172,9 @@ def compute_optimal_policy_of_state_mdp(
     )
 
 
-def _select_optimal_policy(clf_mdp, clf, skip_error_terms, method, true_reward_rounding):
+def _select_optimal_policy(
+    clf_mdp, clf, skip_error_terms, method, true_reward_rounding
+):
     """
     Solves the fitted `clf_mdp` and returns its optimal policy: the first one,
     if there are multiple.

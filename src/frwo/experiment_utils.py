@@ -1112,7 +1112,9 @@ def _derived_seed(exp_info, *parts, bits=32):
     """A deterministic `bits`-bit seed for the draws `parts` describe. See the
     comment above."""
     key = _derived_key(exp_info, *parts)
-    return int.from_bytes(hashlib.blake2b(key.encode(), digest_size=bits // 8).digest(), "big")
+    return int.from_bytes(
+        hashlib.blake2b(key.encode(), digest_size=bits // 8).digest(), "big"
+    )
 
 
 def n_restarts(exp_info):
@@ -1318,7 +1320,9 @@ def validate_training_adjusts(exp_info):
         names = metric_names if is_multiplier else objective_names
         for entry in entries:
             if not entry:
-                raise ValueError(f"{list_key} has an empty entry, which adjusts nothing.")
+                raise ValueError(
+                    f"{list_key} has an empty entry, which adjusts nothing."
+                )
             for name, value in entry:
                 if name not in names:
                     raise ValueError(
@@ -2386,9 +2390,7 @@ def _bias_type_random_state(exp_info, bias_type, trial_i, stage):
         yield
         return
 
-    key = _derived_key(
-        exp_info, "bias_type", bias_type_name(bias_type), stage, trial_i
-    )
+    key = _derived_key(exp_info, "bias_type", bias_type_name(bias_type), stage, trial_i)
     with _seeded_global_random_state(key):
         yield
 
@@ -2771,7 +2773,9 @@ def _split_dataset_and_generate_expert_demos(
             # on them) once per split and bias type, so that every
             # compute_iteration_subdominance() call of that bias type reuses the
             # same groups. A demo bias type takes the unbiased run's groups.
-            logging.info("Generating subdominance groups for the expert demonstrations...")
+            logging.info(
+                "Generating subdominance groups for the expert demonstrations..."
+            )
             subdom_groups_train = generate_subdominance_groups(
                 exp_info, expert_train.demo, group_idxs_train
             )
@@ -3897,7 +3901,9 @@ def _train_subdominance(exp_info, model, bias_demos):
     learn from the demonstrations are trained to minimize, and so what their
     restarts are compared on. Only the training split is read.
     """
-    demo = generate_demo(model, bias_demos.X_train, bias_demos.y_train, can_observe_y=False)
+    demo = generate_demo(
+        model, bias_demos.X_train, bias_demos.y_train, can_observe_y=False
+    )
     return float(
         compute_iteration_subdominance(
             exp_info,
@@ -4097,8 +4103,11 @@ def _run_superhuman_trial(
             selected = int(np.argmin(objectives))
             sh_model = models[selected]
             _record_restarts(
-                run, "subdominance against the demonstrations (training split)",
-                seeds, objectives, selected,
+                run,
+                "subdominance against the demonstrations (training split)",
+                seeds,
+                objectives,
+                selected,
             )
 
             _log_superhuman_training(run, sh_model)
@@ -4259,9 +4268,7 @@ def _run_baseline_trial(
                 )
                 model.fit(bias_demos.X_train, bias_demos.y_train)
                 models.append(model)
-                objectives.append(
-                    model.training_loss_ if restartable else np.nan
-                )
+                objectives.append(model.training_loss_ if restartable else np.nan)
             run.config.update(
                 {
                     f"BASELINE_{key.upper()}": _json_safe(value)
@@ -4437,9 +4444,7 @@ def run_experiment_trial(
     # Superhuman Fairness baseline, which
     # has no reward weights to adjust, gets a single run.
     for bias_demos in demos_by_bias_type:
-        with _bias_type_random_state(
-            exp_info, bias_demos.bias_type, trial_i, "train"
-        ):
+        with _bias_type_random_state(exp_info, bias_demos.bias_type, trial_i, "train"):
             expert_train = bias_demos.expert_train
             expert_val = bias_demos.expert_val
             expert_test = bias_demos.expert_test
@@ -4556,8 +4561,7 @@ def _run_frwo_trials(
     # expert demonstrated in.
     logging.debug("Fitting `y|x` predictor for clf policy...")
     clf, demo_df = _fit_clf_and_demo_df(
-        exp_info,
-        feature_types, bias_demos.X_train, bias_demos.y_train
+        exp_info, feature_types, bias_demos.X_train, bias_demos.y_train
     )
 
     def run_policy(weight_adjust, training_adjust=NO_TRAINING_ADJUST, base=None):
@@ -4695,7 +4699,9 @@ def _run_frwo_trials(
                 for entry in training_adjusts(exp_info, "subdom_weight")
             ]
         for training_adjust, base in training_adjust_runs:
-            logging.info(f"TRAINING ADJUSTMENT: {training_adjust_name(training_adjust)}")
+            logging.info(
+                f"TRAINING ADJUSTMENT: {training_adjust_name(training_adjust)}"
+            )
             with _training_adjust_random_state(
                 exp_info, bias_demos.bias_type, weight_adjust, training_adjust, trial_i
             ):

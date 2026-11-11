@@ -396,7 +396,9 @@ class ClassificationMDP:
         if not reduced_lp.prepared:
             reduced_lp.prepare(
                 splits=[
-                    split for obj in self.obj_set.objectives for split in obj.to_splits()
+                    split
+                    for obj in self.obj_set.objectives
+                    for split in obj.to_splits()
                 ],
                 reference_costs=self._reference_costs(),
             )
@@ -862,7 +864,9 @@ class _ReducedLP:
         self.T_class = (self.T @ merge).tocsr()
         self.T_class_t = self.T_class.T.tocsr()
         self.n_classes = n_classes
-        self.class_weight = np.bincount(group_class, weights=group_weight, minlength=n_classes)
+        self.class_weight = np.bincount(
+            group_class, weights=group_weight, minlength=n_classes
+        )
 
         # The fill order: by class, then group index. `_fill_before` is how
         # much of its class's weight comes before each group in it.
@@ -882,9 +886,9 @@ class _ReducedLP:
             class_columns[group_class] / self.class_weight[group_class, None]
         ) * group_weight[:, None]
         scale = np.abs(group_columns).max(initial=0) + 1e-300
-        assert np.abs(group_columns - expected).max(initial=0) <= 1e-9 * scale, (
-            "groups merged into a class don't have parallel columns"
-        )
+        assert (
+            np.abs(group_columns - expected).max(initial=0) <= 1e-9 * scale
+        ), "groups merged into a class don't have parallel columns"
 
         self._group_class = group_class
         self._group_weight = group_weight
@@ -924,7 +928,8 @@ class _ReducedLP:
                     row_starts.append(n_rows)
                     E_rows.append(np.asarray(A_ub @ self.T_class))
                     b_rows.append(
-                        np.atleast_1d(np.asarray(split.b_ub, dtype=float)) - A_ub @ self.x0
+                        np.atleast_1d(np.asarray(split.b_ub, dtype=float))
+                        - A_ub @ self.x0
                     )
                     n_rows += A_ub.shape[0]
             constrained = (first_constrained, len(row_starts))
@@ -932,7 +937,12 @@ class _ReducedLP:
                 objective_splits
             ), f"objective {name} has several splits, not all of them constrained"
             self._objectives.append(
-                (name, first, len(offsets), constrained if len(objective_splits) > 1 else None)
+                (
+                    name,
+                    first,
+                    len(offsets),
+                    constrained if len(objective_splits) > 1 else None,
+                )
             )
         self._split_offsets = np.array(offsets)
         self._split_E = np.vstack(E_rows) if E_rows else None
@@ -1002,7 +1012,9 @@ class _ReducedLP:
         values = -(self._split_offsets[:, None] + self._split_costs @ Q)
         if self._split_E is not None:
             violations = np.maximum.reduceat(
-                self._split_E @ Q - self._split_b[:, None], self._split_row_starts, axis=0
+                self._split_E @ Q - self._split_b[:, None],
+                self._split_row_starts,
+                axis=0,
             )
         rewards = np.zeros(n)
         for name, first, last, constrained in self._objectives:
@@ -1169,7 +1181,10 @@ class _ReducedLP:
             np.add.at(
                 Q,
                 classes,
-                ((roundings - usual) * (self._group_weight[fractional] / self.class_weight[classes])).T,
+                (
+                    (roundings - usual)
+                    * (self._group_weight[fractional] / self.class_weight[classes])
+                ).T,
             )
             rewards = self.true_rewards(Q, reward_weights)
             best = int(np.argmax(rewards))
