@@ -3479,6 +3479,7 @@ def subdominance_of_weights(
         reward_weights=reward_weights,
         skip_error_terms=True,
         method=exp_info["METHOD"],
+        true_reward_rounding=exp_info["TRUE_REWARD_ROUNDING"],
     )
     # Generate demos from the optimal policy
     yhat = None
@@ -4634,6 +4635,7 @@ def _run_frwo_trials(
                 method=exp_info["METHOD"],
                 min_freq_fill_pct=exp_info["MIN_FREQ_FILL_PCT"],
                 restrict_y=exp_info["RESTRICT_Y_ACTION"],
+                true_reward_rounding=exp_info["TRUE_REWARD_ROUNDING"],
             )
 
             ##

@@ -116,6 +116,21 @@ common:
   # policy depends only on the reward weights (see `_ReducedLP` in
   # src/frwo/rl/clf_mdp.py).
   METHOD: highs
+  # How each optimal classifier policy's LP solution is rounded to a
+  # deterministic policy when some groups of states are left predicting 1
+  # with a fractional probability. If true, every rounding of those groups
+  # (when there are at most 10 of them) is scored by its true reward, the
+  # one that takes, for each absolute-value objective, the sign the policy
+  # actually has, and the best is kept. If false, the usual rounding (to the
+  # more probable action) is kept only if it satisfies its optimization
+  # problem's constraints, and is scored by that problem's linear reward,
+  # which can overstate it. See `_ReducedLP.true_reward_rounder()` and
+  # `_ReducedLP.rounder()` in src/frwo/rl/clf_mdp.py. Like METHOD, it is not
+  # tuned and changes the expert's policy (OptClfMDPPol) too, so it changes
+  # the demonstrations every technique is scored against. In paired TPE-200
+  # runs, true lowered Fairness Reward Weight Optimization's subdominance on
+  # COMPAS but raised it on Adult's validation and test splits.
+  TRUE_REWARD_ROUNDING: false
   # The random forest that predicts `y` from `x` for the policies Fairness
   # Reward Weight Optimization learns. Those policies cannot observe `y`, so it
   # decides which MDP state each row is in. The defaults are scikit-learn's.

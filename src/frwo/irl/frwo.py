@@ -30,6 +30,7 @@ def compute_optimal_policy(
     gamma=1e-9,
     min_freq_fill_pct=0,
     restrict_y=True,
+    true_reward_rounding=False,
 ):
     """
     Learns the optimal policies from the provided reward weights.
@@ -72,11 +73,17 @@ def compute_optimal_policy(
     restrict_y : bool, deafult True
         If True, policy must have same action for any x,z combo, regardless
         of y.
+    true_reward_rounding : bool, default False
+        Whether each LP solution is rounded to the deterministic policy with
+        the best true reward among its roundings, rather than to the usual
+        rounding if it is feasible (see
+        `frwo.rl.clf_mdp.ClassificationMDP.compute_optimal_policies()`).
 
     Returns
     -------
     opt_pol : frwo.rl.clf_mdp.ClassificationMDPPolicy
-        The optimal policy. If there are multiple, it randomly selects one.
+        The optimal policy. If there are multiple, the first one (see
+        `_select_optimal_policy()`).
     """
     clf_mdp = ClassificationMDP(
         gamma=gamma,
@@ -92,7 +99,9 @@ def compute_optimal_policy(
         restrict_y=restrict_y,
     )
 
-    return _sample_optimal_policy(clf_mdp, clf, skip_error_terms, method)
+    return _select_optimal_policy(
+        clf_mdp, clf, skip_error_terms, method, true_reward_rounding
+    )
 
 
 def fit_state_mdp(
@@ -138,6 +147,7 @@ def compute_optimal_policy_of_state_mdp(
     reward_weights,
     skip_error_terms=True,
     method="highs",
+    true_reward_rounding=False,
 ):
     """
     Equivalent to `compute_optimal_policy()` with the parameters `state_mdp`
@@ -147,22 +157,33 @@ def compute_optimal_policy_of_state_mdp(
     ----------
     state_mdp : frwo.rl.clf_mdp.ClassificationMDP
         The MDP returned by `fit_state_mdp()`. It is not modified.
-    clf, reward_weights, skip_error_terms, method
+    clf, reward_weights, skip_error_terms, method, true_reward_rounding
         See `compute_optimal_policy()`.
 
     Returns
     -------
     opt_pol : frwo.rl.clf_mdp.ClassificationMDPPolicy
-        The optimal policy. If there are multiple, it randomly selects one.
+        The optimal policy. If there are multiple, the first one (see
+        `_select_optimal_policy()`).
     """
     clf_mdp = state_mdp.with_reward_weights(reward_weights)
-    return _sample_optimal_policy(clf_mdp, clf, skip_error_terms, method)
+    return _select_optimal_policy(
+        clf_mdp, clf, skip_error_terms, method, true_reward_rounding
+    )
 
 
-def _sample_optimal_policy(clf_mdp, clf, skip_error_terms, method):
+def _select_optimal_policy(clf_mdp, clf, skip_error_terms, method, true_reward_rounding):
     """
-    Solves the fitted `clf_mdp` and returns one of its optimal policies, picked
-    at random if there are multiple.
+    Solves the fitted `clf_mdp` and returns its optimal policy: the first one,
+    if there are multiple.
+
+    Multiple policies are tied for the best reward when the LP's optimal face
+    is degenerate, and they can trade the objectives off very differently. The
+    first is taken, rather than one drawn at random, so that the policy is a
+    function of the reward weights alone: `opt_debias` then scores exactly the
+    policy its weights get, every evaluation of the same weights agrees, and
+    no random draw is taken from the global numpy generator, whose state would
+    otherwise depend on how many ties every earlier solve happened to hit.
     """
     # Compute the optimal policy(s). This does NOT fit the classifier that
     # predicts Y from Z, X. That occurs on the generate_demo() call. This
@@ -171,15 +192,16 @@ def _sample_optimal_policy(clf_mdp, clf, skip_error_terms, method):
     optimal_policies = clf_mdp.compute_optimal_policies(
         skip_error_terms=skip_error_terms,
         method=method,
+        true_reward_rounding=true_reward_rounding,
     )
 
-    # Pick from one of the policies (if there are multiple).
+    # The policies are in a fixed order (that of the sub-problems they came
+    # from), so the first is the same for the same reward weights.
     logging.info(f"\n\t\tFound {len(optimal_policies)} optimal policies.")
-    sampled_policy = optimal_policies[np.random.choice(len(optimal_policies))]
 
     clf_pol = ClassificationMDPPolicy(
         mdp=clf_mdp,
-        pi=sampled_policy,
+        pi=optimal_policies[0],
         clf=clf,
     )
 
@@ -243,6 +265,7 @@ class OptClfMDPPolicyExpert:
             method=exp_info["METHOD"],
             min_freq_fill_pct=exp_info["MIN_FREQ_FILL_PCT"],
             restrict_y=exp_info["RESTRICT_Y_ACTION"],
+            true_reward_rounding=exp_info["TRUE_REWARD_ROUNDING"],
         )
 
 
