@@ -52,7 +52,10 @@ The experiment settings are split across three kinds of file:
 * `configs/base.yaml` holds everything the experiment configs share. Its
   comments document each setting. It has four parts:
   * `RANDOM_SEED` and `EXPERT_ALGOS` at the top: the global random seed and
-    the experts.
+    the experts. The `OptClfMDPPol` expert weights its reward objectives
+    equally, unless its entry gives reward weights, e.g.
+    `- OptClfMDPPol: {Acc: 2.0, DemPar: 1.0}`, which are L1 normalized. It
+    can be listed several times with different weights.
   * `common`: the settings shared by every experiment.
   * `datasets`: one entry per dataset, holding that dataset's own settings.
 * `configs/tuned_hyperparameters.yaml` holds every technique's tuned

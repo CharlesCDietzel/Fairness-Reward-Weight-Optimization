@@ -31,8 +31,19 @@ RANDOM_SEED: 42
 
 # The experts whose demonstrations are learned from. Every selected experiment
 # is run once per expert. An experiment config may set its own.
+#
+# OptClfMDPPol, the optimal classifier policy, takes its reward weights from
+# its entry. A plain `- OptClfMDPPol` weights every FEAT_EXP_OBJECTIVE_NAMES
+# objective equally. Written as a mapping to reward weights by objective, e.g.
+# `- OptClfMDPPol: {Acc: 2.0, DemPar: 1.0}`, the objectives it leaves out get
+# 0, and the weights are L1 normalized (divided by the sum of their absolute
+# values; negative weights are allowed). It can be listed any number of times,
+# each with different weights. A weighted copy's name (its EXPERT_ALGO in W&B
+# and the plotting notebook) is built from its weights as written, e.g.
+# `OptClfMDPPol_Acc_2.0_DemPar_1.0`.
 EXPERT_ALGOS:
   - OptClfMDPPol
+  # - OptClfMDPPol: {Acc: 2.0, DemPar: 1.0}
   # A logistic regression post-processed by a fairlearn ThresholdOptimizer,
   # fit on a class-balanced subsample. It takes its fairness constraint from
   # SH_DEMO_CONSTRAINTS below.

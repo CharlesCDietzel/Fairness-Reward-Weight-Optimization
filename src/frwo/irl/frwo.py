@@ -227,21 +227,41 @@ class OptClfMDPPolicyExpert:
     ----------
     feature_types : dict<str, list>
         Mapping of column names to their type of feature.
+    reward_weights : dict<str, float>, optional
+        The L1 normalized reward weight of every objective of the objective
+        set, by name: the experiment's `EXPERT_REWARD_WEIGHTS` (see
+        `frwo.config.expert_settings()`). None means equal weights.
     """
 
-    def __init__(self, feature_types):
+    def __init__(self, feature_types, reward_weights=None):
         self.feature_types = feature_types
+        self.reward_weights = reward_weights
 
     def build_policy(self, X_train, y_train, obj_set, exp_info):
         """
         Fits the `y|x` predictor on `(X_train, y_train)` and computes the
-        optimal classifier policy for that data, using equal, positive reward
-        weights (summing to 1) across every objective in `obj_set`.
+        optimal classifier policy for that data, using the expert's reward
+        weights or, if it has none, equal positive weights (summing to 1)
+        across every objective in `obj_set`.
 
         Returns
         -------
         clf_pol : ClassificationMDPPolicy
         """
+        objective_names = [obj.name for obj in obj_set.objectives]
+        if self.reward_weights is None:
+            n_objs = len(objective_names)
+            reward_weights = {name: 1.0 / n_objs for name in objective_names}
+        else:
+            if sorted(self.reward_weights) != sorted(objective_names):
+                raise ValueError(
+                    f"The expert's reward weights are for {list(self.reward_weights)},"
+                    f" but its objectives are {objective_names}."
+                )
+            reward_weights = {
+                name: self.reward_weights[name] for name in objective_names
+            }
+
         x_cols = input_columns(self.feature_types)
         x_cols.remove("z")
 
@@ -253,9 +273,6 @@ class OptClfMDPPolicyExpert:
 
         clf_df = pd.DataFrame(X_train).copy()
         clf_df["y"] = y_train
-
-        n_objs = len(obj_set.objectives)
-        reward_weights = {obj.name: 1.0 / n_objs for obj in obj_set.objectives}
 
         return compute_optimal_policy(
             clf_df=clf_df,

@@ -31,6 +31,7 @@ import functools
 import hashlib
 import json
 import logging
+import math
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -124,6 +125,36 @@ RUN_OPT_DEBIAS = "RUN_OPT_DEBIAS"
 # What every `exp_info` records as the experiment config it came from.
 CONFIG_NAME = "CONFIG_NAME"
 
+# The only expert whose reward weights EXPERT_ALGOS can set (see
+# `parse_expert_algos()`).
+OPT_CLF_MDP_POL = "OptClfMDPPol"
+
+
+@dataclass(frozen=True)
+class ExpertSpec:
+    """
+    One expert listed in EXPERT_ALGOS (see `parse_expert_algos()`).
+
+    Attributes
+    ----------
+    name : str
+        The expert's `EXPERT_ALGO`. Its W&B group and run tag use it, and so
+        does the plotting notebook to tell experts apart. For an entry
+        without reward weights this is the algorithm itself. Otherwise it is
+        built from the weights as written, e.g.
+        `OptClfMDPPol_Acc_2.0_DemPar_1.0`.
+    algo : str
+        The expert algorithm: a key of
+        `experiment_utils.generate_expert_algo_lookup()`.
+    reward_weights : tuple or None
+        The configured reward weights, as `(objective name, weight)` pairs in
+        the order written and not yet normalized. None means equal weights.
+    """
+
+    name: str
+    algo: str
+    reward_weights: tuple | None = None
+
 
 @dataclass
 class ExperimentPlan:
@@ -136,18 +167,19 @@ class ExperimentPlan:
         The experiment config's name.
     random_seed : int
         Seeds the global numpy and `random` generators.
-    expert_algos : list<str>
+    experts : list<ExpertSpec>
         Every selected experiment is run once per expert.
     selected_datasets : list<str>
         The DATASETs of the experiments to run; the rest are skipped.
     experiments : list<dict>
         The `exp_info` of every dataset's experiment, in the base's order,
-        lacking only the `EXPERT_ALGO` each run sets.
+        lacking only the expert's settings each run sets (see
+        `expert_settings()`).
     """
 
     config_name: str
     random_seed: int
-    expert_algos: list
+    experts: list
     selected_datasets: list
     experiments: list
 
@@ -471,6 +503,148 @@ def _to_pairs(key, value):
     return tuple(entries)
 
 
+def parse_expert_algos(expert_algos):
+    """
+    Read EXPERT_ALGOS into the experts it lists.
+
+    Each entry is either an expert algorithm's name, e.g. `PostProcDemo`, or a
+    mapping from `OptClfMDPPol` to its reward weights, by objective, e.g.
+    `{OptClfMDPPol: {Acc: 2.0, DemPar: 1.0}}`. A plain `OptClfMDPPol`, or one
+    whose mapping is empty, weights its objectives equally. Mapped entries can
+    repeat `OptClfMDPPol`, each with weights of its own. `expert_settings()`
+    describes how the weights are used.
+
+    Returns
+    -------
+    experts : list<ExpertSpec>
+        In the order listed.
+
+    Raises
+    ------
+    ValueError
+        If an entry is malformed, or two entries would have the same name.
+    """
+    if not isinstance(expert_algos, (list, tuple)):
+        raise ValueError(
+            f"EXPERT_ALGOS must be a list of experts, got {expert_algos!r}."
+        )
+    experts = [_parse_expert(entry) for entry in expert_algos]
+
+    names = [expert.name for expert in experts]
+    duplicates = sorted({name for name in names if names.count(name) > 1})
+    if duplicates:
+        raise ValueError(
+            f"EXPERT_ALGOS lists {duplicates} more than once. Their runs would"
+            " share a W&B group and be mixed together in the results."
+        )
+    return experts
+
+
+def _parse_expert(entry):
+    """One entry of EXPERT_ALGOS as an `ExpertSpec`. See `parse_expert_algos()`."""
+    example = f"{{{OPT_CLF_MDP_POL}: {{Acc: 2.0, DemPar: 1.0}}}}"
+    if isinstance(entry, str):
+        return ExpertSpec(name=entry, algo=entry)
+    if not isinstance(entry, dict) or len(entry) != 1:
+        raise ValueError(
+            f"EXPERT_ALGOS entry {entry!r} must be an expert's name, or a mapping"
+            f" from {OPT_CLF_MDP_POL} to its reward weights, e.g. {example}."
+        )
+
+    ((algo, weights),) = entry.items()
+    if algo != OPT_CLF_MDP_POL:
+        raise ValueError(
+            f"EXPERT_ALGOS entry {entry!r}: only {OPT_CLF_MDP_POL} takes reward weights."
+        )
+    # With every weight commented out, YAML reads the mapping as null.
+    if not weights:
+        return ExpertSpec(name=algo, algo=algo)
+    if not isinstance(weights, dict):
+        raise ValueError(
+            f"EXPERT_ALGOS entry {entry!r}: the reward weights must be a mapping"
+            f" from an objective's name to its weight, e.g. {example}."
+        )
+    for name, value in weights.items():
+        if (
+            not isinstance(name, str)
+            or isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(value)
+        ):
+            raise ValueError(
+                f"EXPERT_ALGOS entry {entry!r}: {name!r}: {value!r} must be an"
+                " objective's name and a finite number. (Write small floats with"
+                " a decimal point, e.g. `1.0e-5`: YAML reads `1e-5` as a string.)"
+            )
+    if not any(weights.values()):
+        raise ValueError(
+            f"EXPERT_ALGOS entry {entry!r}: every reward weight is 0, so they"
+            " cannot be L1 normalized."
+        )
+
+    pairs = tuple(weights.items())
+    name = "_".join([algo, *(f"{objective}_{value}" for objective, value in pairs)])
+    return ExpertSpec(name=name, algo=algo, reward_weights=pairs)
+
+
+def expert_settings(expert, exp_info):
+    """
+    The `exp_info` values that select `expert` for one experiment.
+
+    Parameters
+    ----------
+    expert : ExpertSpec
+    exp_info : dict
+        The experiment's `exp_info`, from `build_experiment_plan()`. Only
+        FEAT_EXP_OBJECTIVE_NAMES (and DATASET, for error messages) are read.
+
+    Returns
+    -------
+    settings : dict
+        `EXPERT_ALGO`: the expert's name.
+        `EXPERT_BASE_ALGO`: its algorithm.
+        `EXPERT_REWARD_WEIGHTS`: for `OptClfMDPPol`, its reward weight for
+            each of FEAT_EXP_OBJECTIVE_NAMES, in their order. Configured
+            weights get 0 for every objective they leave out and are then L1
+            normalized (divided by the sum of their absolute values). With
+            none configured, every weight is 1/n. None for every other
+            expert.
+
+    Raises
+    ------
+    ValueError
+        If the configured weights name an objective that is not in this
+        experiment's FEAT_EXP_OBJECTIVE_NAMES.
+    """
+    reward_weights = None
+    if expert.algo == OPT_CLF_MDP_POL:
+        objective_names = list(exp_info["FEAT_EXP_OBJECTIVE_NAMES"])
+        if expert.reward_weights is None:
+            # Exactly the expression the equal weights have always been
+            # computed with.
+            n_objs = len(objective_names)
+            reward_weights = {name: 1.0 / n_objs for name in objective_names}
+        else:
+            configured = dict(expert.reward_weights)
+            unknown = [name for name in configured if name not in objective_names]
+            if unknown:
+                raise ValueError(
+                    f"EXPERT_ALGOS entry {expert.name}: {unknown} are not in"
+                    f" {exp_info['DATASET']}'s FEAT_EXP_OBJECTIVE_NAMES"
+                    f" {objective_names}."
+                )
+            l1_norm = math.fsum(abs(value) for value in configured.values())
+            reward_weights = {
+                name: float(configured.get(name, 0.0)) / l1_norm
+                for name in objective_names
+            }
+    return {
+        "EXPERT_ALGO": expert.name,
+        "EXPERT_BASE_ALGO": expert.algo,
+        "EXPERT_REWARD_WEIGHTS": reward_weights,
+    }
+
+
 def parse_assignment(text):
     """
     Parse one `KEY=VALUE` command line assignment.
@@ -593,10 +767,21 @@ def build_experiment_plan(config, overrides=None, annotations=None):
             f" not a dataset of {BASE_CONFIG_PATH}. Available: {sorted(datasets)}."
         )
 
+    # Check every expert's reward weights against every selected experiment
+    # now, rather than when its run is reached.
+    try:
+        experts = parse_expert_algos(top_level["EXPERT_ALGOS"])
+        for exp_info in experiments:
+            if exp_info["DATASET"] in top_level["SELECTED_DATASETS"]:
+                for expert in experts:
+                    expert_settings(expert, exp_info)
+    except ValueError as e:
+        raise ValueError(f"{config[CONFIG_NAME]}: {e}") from None
+
     return ExperimentPlan(
         config_name=config[CONFIG_NAME],
         random_seed=top_level["RANDOM_SEED"],
-        expert_algos=list(top_level["EXPERT_ALGOS"]),
+        experts=experts,
         selected_datasets=list(top_level["SELECTED_DATASETS"]),
         experiments=experiments,
     )

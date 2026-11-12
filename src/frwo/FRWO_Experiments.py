@@ -18,6 +18,7 @@ from frwo.config import (
     build_experiment_plan,
     check_tuning,
     discover_configs,
+    expert_settings,
     load_config,
     parse_assignment,
     resolve_config_arg,
@@ -324,9 +325,9 @@ def run_experiments(
                     " datasets list."
                 )
                 continue
-            for expert_i, expert_algo in enumerate(plan.expert_algos):
+            for expert_i, expert in enumerate(plan.experts):
                 exp_info = dict(base_exp_info)
-                exp_info["EXPERT_ALGO"] = expert_algo
+                exp_info |= expert_settings(expert, exp_info)
                 jobs.append((config_i, exp_i, expert_i, exp_info))
 
     with (
@@ -337,7 +338,7 @@ def run_experiments(
             for job_i, (config_i, exp_i, expert_i, exp_info) in enumerate(jobs):
                 plan = plans[config_i]
                 logging.info(
-                    f"EXPERIMENT {expert_i+1}/{len(plan.expert_algos)}"
+                    f"EXPERIMENT {expert_i+1}/{len(plan.experts)}"
                     f" of {exp_info['EXPERIMENT_NAME']}"
                     f" (config {plan.config_name})"
                 )

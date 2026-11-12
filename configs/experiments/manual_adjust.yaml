@@ -27,8 +27,14 @@ SELECTED_DATASETS:
 
 # The experts whose demonstrations are learned from. Every selected experiment
 # is run once per expert. An experiment config may set its own.
+#
+# A plain `- OptClfMDPPol` weights its reward objectives equally; one mapped
+# to reward weights, e.g. `- OptClfMDPPol: {Acc: 2.0, DemPar: 1.0}`, uses them,
+# L1 normalized, with 0 for the objectives left out. It can be listed any
+# number of times, with different weights (see configs/base.yaml).
 EXPERT_ALGOS:
   - OptClfMDPPol
+  # - OptClfMDPPol: {Acc: 2.0, DemPar: 1.0}
   # A logistic regression post-processed by a fairlearn ThresholdOptimizer,
   # fit on a class-balanced subsample. It takes its fairness constraint from
   # SH_DEMO_CONSTRAINTS below.

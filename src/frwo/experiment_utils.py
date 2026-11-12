@@ -760,12 +760,15 @@ def generate_expert_algo_lookup(feature_types, exp_info=None, trial_i=0):
     )
 
     # OptClfMDPPol: optimal classifier policy (see compute_optimal_policy() in
-    # frwo.py), with reward weights split equally (and positively) across
-    # every feature-expectation objective. Its ClassificationMDPPolicy is
-    # actually built per-fold in generate_non_overfit_demos() since it depends
-    # on the objective set and training fold, neither of which is available
-    # here yet.
-    opt_clf_mdp_pol_expert = OptClfMDPPolicyExpert(feature_types)
+    # frwo.py), with the reward weights EXPERT_ALGOS gives it, L1 normalized,
+    # or else with them split equally (and positively) across every
+    # feature-expectation objective (see `frwo.config.expert_settings()`). Its
+    # ClassificationMDPPolicy is actually built per-fold in
+    # generate_non_overfit_demos() since it depends on the objective set and
+    # training fold, neither of which is available here yet.
+    opt_clf_mdp_pol_expert = OptClfMDPPolicyExpert(
+        feature_types, reward_weights=exp_info.get("EXPERT_REWARD_WEIGHTS")
+    )
 
     expert_algo_lookup = {
         # Experts
@@ -1372,6 +1375,23 @@ def new_session_id():
     return f"{datetime.datetime.now():%Y%m%d-%H%M%S}-{uuid.uuid4().hex[:6]}"
 
 
+# W&B rejects a run tag longer than this.
+WANDB_TAG_MAX_LEN = 64
+
+
+def _expert_tag(exp_info):
+    """
+    The run tag of the experiment's expert: its name (EXPERT_ALGO), or its
+    algorithm if the name is too long for a W&B tag, as the name of an
+    OptClfMDPPol expert with many reward weights can be. The run config
+    still records the name in full.
+    """
+    name = str(exp_info["EXPERT_ALGO"])
+    if len(name) <= WANDB_TAG_MAX_LEN:
+        return name
+    return str(exp_info.get("EXPERT_BASE_ALGO", name))[:WANDB_TAG_MAX_LEN]
+
+
 def start_wandb_run(
     exp_info,
     algorithm,
@@ -1476,7 +1496,7 @@ def start_wandb_run(
         config=config,
         tags=[
             str(exp_info["DATASET"]),
-            str(exp_info["EXPERT_ALGO"]),
+            _expert_tag(exp_info),
             str(exp_info["IRL_METHOD"]),
             algorithm_name,
             bias_name,
@@ -2233,7 +2253,10 @@ def _generate_expert_demonstrations(
         The demonstrations, feature expectations and performance measures of
         this split.
     """
-    clf = copy.deepcopy(expert_algo_lookup[exp_info["EXPERT_ALGO"]])
+    # EXPERT_ALGO names the expert, which for an OptClfMDPPol expert with
+    # reward weights of its own is not its algorithm.
+    expert_algo = exp_info.get("EXPERT_BASE_ALGO", exp_info["EXPERT_ALGO"])
+    clf = copy.deepcopy(expert_algo_lookup[expert_algo])
     muE, demoE = generate_mu_and_demos(
         exp_info,
         X=X,
