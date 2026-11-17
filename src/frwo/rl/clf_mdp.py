@@ -16,6 +16,12 @@ from frwo.rl.state_lookup import StateIndex
 
 class ClassificationMDP:
     """
+    A classification dataset as an MDP: one state per combination of the
+    `x_cols`, `z` and `y` values in it, and the actions 0 and 1 (the
+    prediction). A policy can't observe `y`, so the two states that differ
+    only by `y` (same `x_cols` and `z`) are constrained to take the same
+    action.
+
     Parameters
     ----------
     gamma : float, range, [0, 1)
@@ -32,9 +38,10 @@ class ClassificationMDP:
     b_eq_ : numpy.array<float>
         A.k.a. "mu0". Initial state probabilities.
     A_eq_ : scipy.sparse.csc_array, shape (n_rows, 2*n_states_)
-        The state-action transition matrix, followed (if `restrict_y`) by the
-        action equality constraints. Entries with magnitude <= HiGHS'
-        `small_matrix_value` are omitted (see `_compute_A_eq`). The LPs are
+        The state-action transition matrix, followed by the action equality
+        constraints of the states that differ only by `y`. Entries with
+        magnitude <= HiGHS' `small_matrix_value` are omitted (see
+        `_compute_A_eq`). The LPs are
         solved in the reduced form of `reduced_lp_`, which satisfies these
         constraints by construction (`A_eq_` is only used to check the
         reduction, see `_ReducedLP.check_constraints()`).
@@ -43,19 +50,11 @@ class ClassificationMDP:
         by every copy `with_reward_weights()` makes.
     n_states_ : int
         Number of states.
-    state_reducer_ : dict<str, dict<?, ?>>
-        Specifies which state input columns and which values get replaced with
-        default values. Used to reduce the state space by replacing infrequent
-        state values with default values.
     reduced_state_df_ : pandas.DataFrame
         Index is state index, columns are features and mu0.
-    reduced_state_lookup_ : dict<tuple, int>
-        Maps classification features to its MDP state index.
-    restrict_y_ : bool
-        Whether the MDP was fit with `restrict_y`.
     state_index_ : frwo.rl.state_lookup.StateIndex
-        How rows are looked up among the states (by their x_cols and z alone
-        if `restrict_y_`), and the fallbacks for rows in unseen states.
+        How rows are looked up among the states (by their x_cols and z), and
+        the fallbacks for rows in unseen states.
     ldf_ : pandas.DataFrame
         "Lambda dataframe". One row for each state and action combination.
         Columns are **x_cols, z, y, yhat.
@@ -83,12 +82,9 @@ class ClassificationMDP:
         self.gamma = gamma
         self.obj_set = obj_set
         self.x_cols = x_cols
-        self.state_reducer_ = {}
         self.reduced_state_df_ = None
-        self.reduced_state_lookup_ = None
-        self.restrict_y_ = None
         self.state_index_ = None
-        self.n_states = None
+        self.n_states_ = None
         self.A_eq_ = None
         self.reduced_lp_ = None
         self.b_eq_ = None
@@ -96,7 +92,7 @@ class ClassificationMDP:
         self.opt_problems_ = None
         self.reward_weights_ = None
 
-    def fit(self, reward_weights, clf_df, min_freq_fill_pct=0, restrict_y=True):
+    def fit(self, reward_weights, clf_df):
         """
         Fits the MDP to `clf_df` (`fit_states()`), then builds its optimization
         problems for `reward_weights` (`fit_rewards()`).
@@ -111,37 +107,27 @@ class ClassificationMDP:
                 'z' : int. Binary protected attribute.
                 'y' : int. Binary target variable.
 
-        min_freq_fill_pct, float, range[0, 1), default 0
-            Minimum frequency for each input variable to not get replaced by a
-            default value.
-        restrict_y : bool, deafult True
-            If True, policy must have same action for any x,z combo, regardless
-            of y.
-
         Sets Attributes
         ---------------
         b_eq_
         A_eq_
-        state_reducer_
-        reduced_state_lookup_
+        reduced_lp_
         reduced_state_df_
-        restrict_y_
         state_index_
         n_states_
         ldf_
         opt_problems_
+        reward_weights_
 
         Returns
         -------
         self
         """
-        self.fit_states(
-            clf_df, min_freq_fill_pct=min_freq_fill_pct, restrict_y=restrict_y
-        )
+        self.fit_states(clf_df)
         self.fit_rewards(reward_weights)
         return None
 
-    def fit_states(self, clf_df, min_freq_fill_pct=0, restrict_y=True):
+    def fit_states(self, clf_df):
         """
         Fits the states, transitions and constraints of the MDP to `clf_df`:
         everything `fit()` sets that doesn't depend on the reward weights.
@@ -155,10 +141,7 @@ class ClassificationMDP:
         b_eq_
         A_eq_
         reduced_lp_
-        state_reducer_
-        reduced_state_lookup_
         reduced_state_df_
-        restrict_y_
         state_index_
         n_states_
         ldf_
@@ -167,82 +150,14 @@ class ClassificationMDP:
         -------
         None
         """
-        clf_df = clf_df.copy()
-
-        # Set the min frequency replacement values to reduce state
-        # min_freq_fill_pcts : dict<str, (float, range [0,1], ?)>, default {}
-        #     Dictionary with col_name -> (min_freq_pct, default_val)
-        #     that specifies the minimum frequency to replace a each input
-        #     attribute with a default value.  It's a hacky equivalent to what
-        #     the `min_frequency` parameter does for the scikitlearn
-        #     OneHotEncoder.
-        min_freq_fill_pcts = {}
-        for x in self.x_cols:
-            min_freq_fill_pcts[x] = (
-                min_freq_fill_pct,
-                -555,  # Distinct value for too infrequent values.
-                # clf_df[x].value_counts().sort_values().index[-1],  # most freq.
-            )
-        logging.debug("\nmin_freq_fill_pcts:")
-        logging.debug(min_freq_fill_pcts)
-
-        # Generate the state_reducer_ object that replaces infrequent state
-        # values with defaults.
-        logging.debug("\nFitting state_reducer_ ...")
-        for x in min_freq_fill_pcts.keys():
-            min_freq, default_val = min_freq_fill_pcts[x]
-            freq = clf_df.groupby(x).size() / len(clf_df)
-            mean_target_rel_delta = (
-                clf_df.groupby(x)["y"].mean() - clf_df["y"].mean()
-            ) / clf_df["y"].mean()
-            # NEW as of 01/07/2024
-            # Only use default override for categorical variables if it has a
-            # relative mean target encoding > MIN_TARGET_MEAN_ENC_REL_DELTA and
-            # its freq > min_freq, OR if its freq is 3x more than min_freq.
-            # This is intending to make it so that I can add more categorical
-            # variables in datasets without it taking so long.
-            for x_val in (freq[freq < 1 * min_freq]).index:
-                # MIN_TARGET_MEAN_ENC_REL_DELTA = .1
-                # if mean_target_rel_delta.loc[x_val] > MIN_TARGET_MEAN_ENC_REL_DELTA and freq[x_val] > min_freq:
-                #     logging.debug(f"\n\t\tBypassing category override; {x}: {x_val}, freq={freq[x_val]:.3f}, y_rel_delta={mean_target_rel_delta[x_val]:.3f}")
-                #     continue
-                try:
-                    if x not in self.state_reducer_:
-                        self.state_reducer_[x] = {}
-
-                    self.state_reducer_[x][x_val] = default_val
-                    mask = clf_df[x] == x_val
-                    try:
-                        clf_df.loc[mask, x] = default_val
-                    except TypeError:
-                        # Casting to object matches pandas <3 behavior,
-                        # which silently upcast columns (e.g. bool, str)
-                        # to object when assigning an incompatible value.
-                        clf_df[x] = clf_df[x].astype(object)
-                        clf_df.loc[mask, x] = default_val
-                except KeyError:
-                    continue
-
-        logging.debug(f"\nstate_reducer_: \n{self.state_reducer_}")
-        # Generate the reduced_state_df_ and the X,y -> state mapping
+        # Generate the reduced_state_df_: one row per state, with its count.
         self.reduced_state_df_ = (
             clf_df.groupby(self.x_cols + ["z", "y"])
             .size()
             .reset_index()
             .rename(columns={0: "count"})
         )
-
-        # Keys are built column-wise rather than with iterrows(), which is much
-        # slower; they hash and compare equal to iterrows()' `tuple(row)` keys.
-        state_cols = self.reduced_state_df_.iloc[:, :-1]
-        self.reduced_state_lookup_ = {}
-        state_counter = 0
-        for key in zip(*(state_cols[col].tolist() for col in state_cols.columns)):
-            self.reduced_state_lookup_[key] = state_counter
-            state_counter += 1
-
-        # Cache n_states since frequently used in computations
-        self.n_states_ = state_counter
+        self.n_states_ = len(self.reduced_state_df_)
 
         # Compute `mu0` (initial state probabilities)
         logging.debug("Computing b_eq ...")
@@ -260,16 +175,14 @@ class ClassificationMDP:
         # Compute b_eq, which consists of two parts:
         #   1: mu0
         #   2: zeros (for action equality for same y-values)
-        self.b_eq_ = self.reduced_state_df_["mu0"]
-        if restrict_y:
-            self.b_eq_ = np.concatenate(
-                [
-                    self.b_eq_,
-                    np.zeros(
-                        self.ldf_.groupby(self.x_cols + ["z", "yhat"]).size().shape[0]
-                    ),  # action equality for y
-                ]
-            )
+        self.b_eq_ = np.concatenate(
+            [
+                self.reduced_state_df_["mu0"],
+                np.zeros(
+                    self.ldf_.groupby(self.x_cols + ["z", "yhat"]).size().shape[0]
+                ),  # action equality for y
+            ]
+        )
 
         # Compute transition matrix linear equations `A_eq`, which consists of
         # two parts:
@@ -285,24 +198,19 @@ class ClassificationMDP:
             mu0=self.reduced_state_df_["mu0"],
             ldf=self.ldf_,
             x_cols=self.x_cols,
-            restrict_y=restrict_y,
         )
 
         # profiler.disable()
         # profiler.print_stats()
 
-        # The states `restrict_y` constrains to take the same action: those
-        # with the same x_cols and z (one with y=0, one with y=1). These are
-        # the groups `_compute_A_eq` builds the action equality constraints
-        # of.
-        if restrict_y:
-            state_groups = (
-                self.reduced_state_df_.groupby(self.x_cols + ["z"], sort=False)
-                .ngroup()
-                .to_numpy()
-            )
-        else:
-            state_groups = np.arange(self.n_states_)
+        # The states constrained to take the same action: those with the same
+        # x_cols and z (one with y=0, one with y=1). These are the groups
+        # `_compute_A_eq` builds the action equality constraints of.
+        state_groups = (
+            self.reduced_state_df_.groupby(self.x_cols + ["z"], sort=False)
+            .ngroup()
+            .to_numpy()
+        )
         self.reduced_lp_ = _ReducedLP(
             mu0=self.reduced_state_df_["mu0"].to_numpy(dtype=float),
             state_counts=state_counts,
@@ -311,10 +219,8 @@ class ClassificationMDP:
         )
         self.reduced_lp_.check_constraints(self.A_eq_, self.b_eq_)
 
-        self.restrict_y_ = restrict_y
         self.state_index_ = StateIndex(
             x_cols=self.x_cols,
-            restrict_y=restrict_y,
             state_df=self.reduced_state_df_,
             state_counts=state_counts,
         )
@@ -474,7 +380,7 @@ class ClassificationMDP:
         )
         return {problem.name: problem.c for problem in obj_set.opt_problems_}
 
-    def _compute_A_eq(self, mu0, ldf, x_cols, restrict_y):
+    def _compute_A_eq(self, mu0, ldf, x_cols):
         """
         Constructs two sets of linear equation constraints.
 
@@ -487,11 +393,9 @@ class ClassificationMDP:
 
         2nd set: require equal actions for same `y`
         -------------------------------------------
-        # Construct constraints that require equal actions for the same `y`
-        # value. This constraint helps the optimizer learn policies that are
-        # robust to incorrect predictions of `y`. This was causing problems
-        # when trying to optimize for fairness constraints like EqOpp that
-        # require knowledge of the `y` value.
+        Constructs constraints that require the two states that differ only
+        by `y` (same x_cols and z) to take each action with the same
+        probability, since a policy can't observe `y`.
 
         Parameters
         ----------
@@ -501,9 +405,6 @@ class ClassificationMDP:
             "Lambda dataframe". One row for each state and action combination.
         x_cols : list<str>
             The columns that are used in the state (along with `z` and `y`).
-        restrict_y : bool
-            If True, policy must have same action for any x,z combo, regardless
-            of y.
 
         Returns
         -------
@@ -540,80 +441,76 @@ class ClassificationMDP:
             vals.append(np.full(len(r), base_row[j]))
         n_rows = n_states
 
-        if restrict_y:
-            # Construct constraints that require equal actions for the same `y`
-            # value. This constraint helps the optimizer learn policies that are
-            # robust to incorrect predictions of `y`. This was causing problems
-            # when trying to optimize for fairness constraints like EqOpp that
-            # require knowledge of the `y` value.
+        # Construct constraints that require equal actions for the same `y`
+        # value: a policy can't observe `y`.
 
-            # For each, x, a combination:
-            #   Add constraint that x,y0,a == x,y1,a
-            #
-            # `ldf` is sorted by x_cols+z+y+mu0 (see
-            # _generate_lambda_linear_equations), so within a group of
-            # matching x_cols+z+yhat, the y=0 row always appears before the
-            # y=1 row. Each row already carries its own `mu0` value, so no
-            # dataframe-wide lookup is needed (unlike the previous
-            # implementation, which re-searched the whole frame per group).
-            # The assertions below enforce the structural invariants this
-            # relies on instead of the (much slower) per-group verification
-            # the old lookup-based implementation performed implicitly.
-            required_cols = set(x_cols) | {"z", "y", "yhat", "mu0"}
-            missing_cols = required_cols - set(ldf.columns)
-            assert not missing_cols, f"ldf is missing required columns: {missing_cols}"
-            assert set(ldf["yhat"].unique()) <= {0, 1}, (
-                "expected exactly 2 actions ('yhat' in {0, 1}); n_actions is "
-                "hardcoded to 2 in this function"
+        # For each, x, a combination:
+        #   Add constraint that x,y0,a == x,y1,a
+        #
+        # `ldf` is sorted by x_cols+z+y+mu0 (see
+        # _generate_lambda_linear_equations), so within a group of
+        # matching x_cols+z+yhat, the y=0 row always appears before the
+        # y=1 row. Each row already carries its own `mu0` value, so no
+        # dataframe-wide lookup is needed (unlike the previous
+        # implementation, which re-searched the whole frame per group).
+        # The assertions below enforce the structural invariants this
+        # relies on instead of the (much slower) per-group verification
+        # the old lookup-based implementation performed implicitly.
+        required_cols = set(x_cols) | {"z", "y", "yhat", "mu0"}
+        missing_cols = required_cols - set(ldf.columns)
+        assert not missing_cols, f"ldf is missing required columns: {missing_cols}"
+        assert set(ldf["yhat"].unique()) <= {0, 1}, (
+            "expected exactly 2 actions ('yhat' in {0, 1}); n_actions is "
+            "hardcoded to 2 in this function"
+        )
+        assert len(ldf) == n_states * n_actions, (
+            "expected ldf to have exactly n_actions rows per state "
+            f"({n_states} states * {n_actions} actions), got {len(ldf)} rows"
+        )
+
+        # A_eq2's columns (ldf row positions) must refer to the same
+        # (state, action) pairs, in the same order, as A_eq's columns
+        # (ordered by mu0). This holds iff every consecutive block of
+        # n_actions rows in `ldf` corresponds to the same state, in the
+        # same order as `mu0` -- verify directly rather than relying on
+        # it silently.
+        ldf_mu0_arr = ldf["mu0"].to_numpy()
+        assert all(
+            np.allclose(ldf_mu0_arr[a::n_actions], mu0_arr)
+            for a in range(n_actions)
+        ), "mu0 and ldf are not aligned to the same state ordering"
+
+        group_cols = x_cols + ["z", "yhat"]
+        group_indices = ldf.groupby(group_cols, sort=False).indices
+        n_constr = len(group_indices)
+        mu0_vals = ldf["mu0"].to_numpy()
+        y_vals = ldf["y"].to_numpy()
+
+        locy0s = np.empty(n_constr, dtype=np.intp)
+        locy1s = np.empty(n_constr, dtype=np.intp)
+        row_i = 0
+        for idx_arr in group_indices.values():
+            assert len(idx_arr) <= 2
+            if len(idx_arr) == 1:
+                continue
+
+            locy0, locy1 = idx_arr[0], idx_arr[1]
+            assert y_vals[locy0] == 0 and y_vals[locy1] == 1, (
+                "expected the y=0 row to precede the y=1 row within each "
+                "x_cols+z+yhat group (relies on ldf's sort order)"
             )
-            assert len(ldf) == n_states * n_actions, (
-                "expected ldf to have exactly n_actions rows per state "
-                f"({n_states} states * {n_actions} actions), got {len(ldf)} rows"
-            )
+            locy0s[row_i] = locy0
+            locy1s[row_i] = locy1
+            row_i += 1
 
-            # A_eq2's columns (ldf row positions) must refer to the same
-            # (state, action) pairs, in the same order, as A_eq's columns
-            # (ordered by mu0). This holds iff every consecutive block of
-            # n_actions rows in `ldf` corresponds to the same state, in the
-            # same order as `mu0` -- verify directly rather than relying on
-            # it silently.
-            ldf_mu0_arr = ldf["mu0"].to_numpy()
-            assert all(
-                np.allclose(ldf_mu0_arr[a::n_actions], mu0_arr)
-                for a in range(n_actions)
-            ), "mu0 and ldf are not aligned to the same state ordering"
-
-            group_cols = x_cols + ["z", "yhat"]
-            group_indices = ldf.groupby(group_cols, sort=False).indices
-            n_constr = len(group_indices)
-            mu0_vals = ldf["mu0"].to_numpy()
-            y_vals = ldf["y"].to_numpy()
-
-            locy0s = np.empty(n_constr, dtype=np.intp)
-            locy1s = np.empty(n_constr, dtype=np.intp)
-            row_i = 0
-            for idx_arr in group_indices.values():
-                assert len(idx_arr) <= 2
-                if len(idx_arr) == 1:
-                    continue
-
-                locy0, locy1 = idx_arr[0], idx_arr[1]
-                assert y_vals[locy0] == 0 and y_vals[locy1] == 1, (
-                    "expected the y=0 row to precede the y=1 row within each "
-                    "x_cols+z+yhat group (relies on ldf's sort order)"
-                )
-                locy0s[row_i] = locy0
-                locy1s[row_i] = locy1
-                row_i += 1
-
-            # Each constraint row: mu0[y1] * x[y0] - mu0[y0] * x[y1] == 0
-            locy0s, locy1s = locy0s[:row_i], locy1s[:row_i]
-            constr_rows = n_states + np.arange(row_i)
-            rows += [constr_rows, constr_rows]
-            cols += [locy0s, locy1s]
-            vals += [mu0_vals[locy1s], -mu0_vals[locy0s]]
-            # Groups with a single row keep their (all-zero) constraint row.
-            n_rows += n_constr
+        # Each constraint row: mu0[y1] * x[y0] - mu0[y0] * x[y1] == 0
+        locy0s, locy1s = locy0s[:row_i], locy1s[:row_i]
+        constr_rows = n_states + np.arange(row_i)
+        rows += [constr_rows, constr_rows]
+        cols += [locy0s, locy1s]
+        vals += [mu0_vals[locy1s], -mu0_vals[locy0s]]
+        # Groups with a single row keep their (all-zero) constraint row.
+        n_rows += n_constr
 
         rows = np.concatenate(rows)
         cols = np.concatenate(cols)
@@ -709,9 +606,8 @@ class _ReducedLP:
     distribution `mu0`, whatever the action. So any policy's discounted state
     occupancy is the same, `mu0 / (1 - gamma)`, and the only freedom the LP's
     occupancy measure `x` has is how each state splits its occupancy between
-    the two actions. With `restrict_y`, the states with the same x_cols and z
-    (the y=0 and the y=1 one) must split it the same way. So every feasible
-    `x` is
+    the two actions. The states with the same x_cols and z (the y=0 and the
+    y=1 one) must split it the same way. So every feasible `x` is
 
         x = x0 + T @ p,   0 <= p <= 1,
 

@@ -6,6 +6,10 @@ experiment_output/**/*.csv
 experiment_output/**/*.json
 experiment_output/**/*.pdf
 experiment_output/**/*.tex
+# Claude's one-off test and comparison runs
+experiment_output/unseen_fallback_comparison/
+experiment_output/frwo_clf_check/
+experiment_output/refactor_check/
 data/**/*.csv
 data/**/*.zip
 data/**/*.p

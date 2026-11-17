@@ -43,15 +43,6 @@ parameters:
       - optuna/SMAC
       - optuna/TPE
       - pybobyqa/Multi-Start BOBYQA
-  # The random forest that predicts `y` from `x` for FRWO's policies. The
-  # defaults (scikit-learn's) are 100 trees, unlimited depth (null) and 1
-  # sample per leaf.
-  FRWO_CLF_N_ESTIMATORS:
-    values: [50, 100, 200, 400]
-  FRWO_CLF_MAX_DEPTH:
-    values: [null, 5, 10, 20]
-  FRWO_CLF_MIN_SAMPLES_LEAF:
-    values: [1, 2, 5, 10, 20, 50]
   # The `alpha` regularization of the subdominance `opt_debias` minimizes.
   # The default is 0.001; the range matches the Superhuman Fairness sweeps'
   # SH_*LAMDA.

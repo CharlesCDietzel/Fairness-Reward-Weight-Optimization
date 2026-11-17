@@ -110,7 +110,6 @@ common:
     - NegPredPar
   USE_HIDDEN_FEATURES_SOURCE: true
   N_EXPERT_DEMOS: 2
-  RESTRICT_Y_ACTION: true
   IRL_METHOD: FRWO
 
   ##
@@ -143,37 +142,21 @@ common:
   # What an optimal classifier policy does with a row whose state its MDP was
   # never fit to (an "unseen" state: a combination of the state columns and
   # z that its training data doesn't have). A row is always looked up by its
-  # state columns and z alone (with RESTRICT_Y_ACTION, its y doesn't change
-  # its action). Options:
+  # state columns and z alone: a policy can't observe y, so the states that
+  # differ only by y take the same action. Options:
   #   none     The default action, 0.
   #   nearest  The majority action of the seen states nearest the row: those
   #            with the same z that differ from it in the fewest state
   #            columns, each weighted by its number of training rows. On a
   #            tie, the states one column further away join the vote (at most
   #            twice; then the default action).
-  #   backoff  The majority action of the seen states that match the row once
-  #            its least important state columns are ignored: columns are
-  #            dropped, least important first, until the row matches a seen
-  #            state with the same z. A column's importance is its conditional
-  #            mutual information with y given z in the MDP's training data.
-  #            On a tie, the next column is dropped too.
   # See src/frwo/rl/state_lookup.py. Like METHOD, it is not tuned, and it
   # changes the expert's policy (OptClfMDPPol) too, so it changes the
-  # demonstrations every technique is scored against. nearest did slightly
-  # better than backoff for the learned policies (val subdominance, 50 paired
-  # trials on 4 datasets); both did much better than none.
+  # demonstrations every technique is scored against. For the learned
+  # policies, nearest did much better than none on Adult and ACSIncome MA
+  # (val and test subdominance), with no detectable difference on COMPAS and
+  # ACSIncome MS.
   UNSEEN_STATE_FALLBACK: nearest
-  # The random forest that predicts `y` from `x` for the policies Fairness
-  # Reward Weight Optimization learns. Those policies cannot observe `y`, so
-  # without RESTRICT_Y_ACTION it decides which MDP state each row is in. With
-  # RESTRICT_Y_ACTION a row's action doesn't depend on its `y`, so the forest
-  # is still fit (drawing from the random generators as before) but its
-  # predictions are never used, and these settings have no effect on the
-  # results. The defaults are scikit-learn's. The expert's own random forest
-  # is separate, and unaffected by these.
-  FRWO_CLF_N_ESTIMATORS: 100
-  FRWO_CLF_MAX_DEPTH: null  # (null: unlimited)
-  FRWO_CLF_MIN_SAMPLES_LEAF: 1
   # The regularization `lamda` of the `alpha` scaling of the subdominance the
   # `opt_debias` weight search minimizes: the counterpart of the Superhuman
   # Fairness baselines' SH_*LAMDA. It does not change the subdominance
@@ -375,9 +358,6 @@ common:
     - Fair LogLoss DP
     - Fair LogLoss EqOdds
 
-
-
-  MIN_FREQ_FILL_PCT: 0.0
   ##
   # Superhuman Fairness baseline parameters. Ignored unless one of the
   # "Superhuman Fairness ..." techniques is listed in ALGORITHMS above.
@@ -481,8 +461,7 @@ common:
 # One entry per dataset, in the order they run, holding its own settings. The
 # tuned hyperparameters are kept apart, in configs/tuned_hyperparameters.yaml.
 datasets:
-  COMPAS:
-    MIN_FREQ_FILL_PCT: 0.0
+  COMPAS: {}
 
   # Boston (DISABLED, SINCE NOT ENOUGH DATA FOR GOOD SUBDOMINANCE CALCS)
   # Boston:
@@ -496,23 +475,16 @@ datasets:
   #   # should be minimal. Therefore, we choose to keep this dataset in.
   #   # Nevermind, taking it out.
 
-  Adult:
-    MIN_FREQ_FILL_PCT: 0.0
+  Adult: {}
 
-  ACSIncome__MA:
-    MIN_FREQ_FILL_PCT: 0.0
+  ACSIncome__MA: {}
 
-  ACSIncome__MS:
-    MIN_FREQ_FILL_PCT: 0.0
+  ACSIncome__MS: {}
 
-  ACSIncome__CA:
-    MIN_FREQ_FILL_PCT: 0.0
+  ACSIncome__CA: {}
 
-  ACSIncome__IL:
-    MIN_FREQ_FILL_PCT: 0.0
+  ACSIncome__IL: {}
 
-  ACSIncome__AL:
-    MIN_FREQ_FILL_PCT: 0.0
+  ACSIncome__AL: {}
 
-  ACSIncome__HI:
-    MIN_FREQ_FILL_PCT: 0.0
+  ACSIncome__HI: {}

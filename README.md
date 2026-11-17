@@ -179,7 +179,7 @@ are left out, so a sweep's results never depend on what was tuned before.
 
 | Technique | Sweep config | Tuned settings |
 | --- | --- | --- |
-| Fairness Reward Weight Optimization | `fairness_reward_weight_optimization.yaml` | `OPT_DEBIAS_OPTIMIZER`, `OPT_DEBIAS_LAMDA`, `FRWO_CLF_*` |
+| Fairness Reward Weight Optimization | `fairness_reward_weight_optimization.yaml` | `OPT_DEBIAS_OPTIMIZER`, `OPT_DEBIAS_LAMDA` |
 | Superhuman Fairness | `superhuman_fairness.yaml` | `SH_ITERS`, `SH_LR_THETA`, `SH_LAMDA` |
 | Superhuman Fairness Fixed | `superhuman_fairness_fixed.yaml` | `SH_FIXED_ITERS`, `SH_FIXED_LR_THETA`, `SH_FIXED_LAMDA` |
 | Superhuman Fairness Neural Network | `superhuman_fairness_nn.yaml` | `SH_NN_*` (all but `SH_NN_DEVICE`) |

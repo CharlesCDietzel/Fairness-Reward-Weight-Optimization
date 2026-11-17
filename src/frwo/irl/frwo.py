@@ -9,7 +9,6 @@ from frwo.rl.clf_mdp import *
 from frwo.rl.clf_mdp_policy import *
 from frwo.rl.objectives import *
 from frwo.utils import *
-from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import train_test_split, KFold
 from sklearn.neural_network import MLPClassifier
 from sklearn.svm import SVC
@@ -21,27 +20,20 @@ from frwo.utils import single_threaded_blas
 @single_threaded_blas
 def compute_optimal_policy(
     clf_df,
-    clf,
     x_cols,
     obj_set,
     reward_weights,
     skip_error_terms=True,
     method="highs",
     gamma=1e-9,
-    min_freq_fill_pct=0,
-    restrict_y=True,
     true_reward_rounding=False,
     unseen_state_fallback="none",
 ):
     """
     Learns the optimal policies from the provided reward weights.
 
-    The `clf_df` is used to "fit" the ClfMDP parameters (e.g. b_eq, A_eq, etc)
-    as well as the classifier that predicts `y` from `X`.
-
-    The other classification parameters (`feature_types`, and `clf` are
-    used only on the classifier that predicts the `y` value from the `X`
-    values.
+    The `clf_df` is used to "fit" the ClfMDP parameters (e.g. b_eq, A_eq,
+    etc).
 
     Parameters
     ----------
@@ -49,8 +41,6 @@ def compute_optimal_policy(
         Classification dataset. Required columns:
             'z' : int. Binary protected attribute.
             'y' : int. Binary target variable.
-    clf : sklearn.pipeline.Pipeline
-        Sklearn classifier instance.
     x_cols : list<str>
         The columns that are used in the state (along with `z` and `y`).
     obj_set : ObjectiveSet
@@ -68,12 +58,6 @@ def compute_optimal_policy(
         The MDP discount factor. Should be close to zero since this is a
         classification mdp, but cannot be zero exactly otherwise the linear
         program won't converge.
-    min_freq_fill_pct, float, range[0, 1), default 0
-        Minimum frequency for each input variable to not get replaced by a
-        default value.
-    restrict_y : bool, deafult True
-        If True, policy must have same action for any x,z combo, regardless
-        of y.
     true_reward_rounding : bool, default False
         Whether each LP solution is rounded to the deterministic policy with
         the best true reward among its roundings, rather than to the usual
@@ -96,16 +80,10 @@ def compute_optimal_policy(
     )
 
     # Construct the mdp, including optimization problems
-    clf_mdp.fit(
-        reward_weights=reward_weights,
-        clf_df=clf_df,
-        min_freq_fill_pct=min_freq_fill_pct,
-        restrict_y=restrict_y,
-    )
+    clf_mdp.fit(reward_weights=reward_weights, clf_df=clf_df)
 
     return _select_optimal_policy(
         clf_mdp,
-        clf,
         skip_error_terms,
         method,
         true_reward_rounding,
@@ -113,14 +91,7 @@ def compute_optimal_policy(
     )
 
 
-def fit_state_mdp(
-    clf_df,
-    x_cols,
-    obj_set,
-    gamma=1e-9,
-    min_freq_fill_pct=0,
-    restrict_y=True,
-):
+def fit_state_mdp(clf_df, x_cols, obj_set, gamma=1e-9):
     """
     Fits the part of the MDP `compute_optimal_policy()` builds that doesn't
     depend on the reward weights, so that the optimal policies of many reward
@@ -141,18 +112,13 @@ def fit_state_mdp(
         obj_set=copy.deepcopy(obj_set),
         x_cols=x_cols,
     )
-    state_mdp.fit_states(
-        clf_df=clf_df,
-        min_freq_fill_pct=min_freq_fill_pct,
-        restrict_y=restrict_y,
-    )
+    state_mdp.fit_states(clf_df=clf_df)
     state_mdp.obj_set.fit_objectives(state_mdp.ldf_)
     return state_mdp
 
 
 def compute_optimal_policy_of_state_mdp(
     state_mdp,
-    clf,
     reward_weights,
     skip_error_terms=True,
     method="highs",
@@ -167,7 +133,7 @@ def compute_optimal_policy_of_state_mdp(
     ----------
     state_mdp : frwo.rl.clf_mdp.ClassificationMDP
         The MDP returned by `fit_state_mdp()`. It is not modified.
-    clf, reward_weights, skip_error_terms, method, true_reward_rounding,
+    reward_weights, skip_error_terms, method, true_reward_rounding,
     unseen_state_fallback
         See `compute_optimal_policy()`.
 
@@ -180,7 +146,6 @@ def compute_optimal_policy_of_state_mdp(
     clf_mdp = state_mdp.with_reward_weights(reward_weights)
     return _select_optimal_policy(
         clf_mdp,
-        clf,
         skip_error_terms,
         method,
         true_reward_rounding,
@@ -190,7 +155,6 @@ def compute_optimal_policy_of_state_mdp(
 
 def _select_optimal_policy(
     clf_mdp,
-    clf,
     skip_error_terms,
     method,
     true_reward_rounding,
@@ -208,10 +172,7 @@ def _select_optimal_policy(
     no random draw is taken from the global numpy generator, whose state would
     otherwise depend on how many ties every earlier solve happened to hit.
     """
-    # Compute the optimal policy(s). This does NOT fit the classifier that
-    # predicts Y from Z, X. That occurs on the generate_demo() call. This
-    # `compute_optimal_policies` computes the optimal policy, assuming the
-    # state is known.
+    # Compute the optimal policy(s): the action of each state.
     optimal_policies = clf_mdp.compute_optimal_policies(
         skip_error_terms=skip_error_terms,
         method=method,
@@ -225,7 +186,6 @@ def _select_optimal_policy(
     clf_pol = ClassificationMDPPolicy(
         mdp=clf_mdp,
         pi=optimal_policies[0],
-        clf=clf,
         unseen_state_fallback=unseen_state_fallback,
     )
 
@@ -261,10 +221,9 @@ class OptClfMDPPolicyExpert:
 
     def build_policy(self, X_train, y_train, obj_set, exp_info):
         """
-        Fits the `y|x` predictor on `(X_train, y_train)` and computes the
-        optimal classifier policy for that data, using the expert's reward
-        weights or, if it has none, equal positive weights (summing to 1)
-        across every objective in `obj_set`.
+        Computes the optimal classifier policy for `(X_train, y_train)`,
+        using the expert's reward weights or, if it has none, equal positive
+        weights (summing to 1) across every objective in `obj_set`.
 
         Returns
         -------
@@ -287,25 +246,16 @@ class OptClfMDPPolicyExpert:
         x_cols = input_columns(self.feature_types)
         x_cols.remove("z")
 
-        inner_clf = sklearn_clf_pipeline(
-            feature_types=self.feature_types,
-            clf_inst=RandomForestClassifier(),
-        )
-        inner_clf.fit(X_train, y_train)
-
         clf_df = pd.DataFrame(X_train).copy()
         clf_df["y"] = y_train
 
         return compute_optimal_policy(
             clf_df=clf_df,
-            clf=inner_clf,
             x_cols=x_cols,
             obj_set=obj_set,
             reward_weights=reward_weights,
             skip_error_terms=True,
             method=exp_info["METHOD"],
-            min_freq_fill_pct=exp_info["MIN_FREQ_FILL_PCT"],
-            restrict_y=exp_info["RESTRICT_Y_ACTION"],
             true_reward_rounding=exp_info["TRUE_REWARD_ROUNDING"],
             unseen_state_fallback=exp_info["UNSEEN_STATE_FALLBACK"],
         )

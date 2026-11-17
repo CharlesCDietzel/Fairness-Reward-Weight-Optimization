@@ -32,9 +32,6 @@ COMPAS:
   Fairness Reward Weight Optimization:
     values:
       WEIGHT_ADJUST_LIST: [[opt_debias, optuna, TPE, 200]]
-      FRWO_CLF_N_ESTIMATORS: 200
-      FRWO_CLF_MAX_DEPTH: 5
-      FRWO_CLF_MIN_SAMPLES_LEAF: 2
       OPT_DEBIAS_LAMDA: 0.0012418071008410394
     objective: null
     sweep: null
@@ -97,9 +94,6 @@ Adult:
   Fairness Reward Weight Optimization:
     values:
       WEIGHT_ADJUST_LIST: [[opt_debias, optuna, TPE, 200]]
-      FRWO_CLF_N_ESTIMATORS: 200
-      FRWO_CLF_MAX_DEPTH: 5
-      FRWO_CLF_MIN_SAMPLES_LEAF: 5
       OPT_DEBIAS_LAMDA: 4.8349841099035256e-05
     objective: null
     sweep: null
@@ -162,9 +156,6 @@ ACSIncome__MA:
   Fairness Reward Weight Optimization:
     values:
       WEIGHT_ADJUST_LIST: [[opt_debias, optuna, TPE, 200]]
-      FRWO_CLF_N_ESTIMATORS: 100
-      FRWO_CLF_MAX_DEPTH: 20
-      FRWO_CLF_MIN_SAMPLES_LEAF: 20
       OPT_DEBIAS_LAMDA: 0.00010126902198666345
     objective: null
     sweep: null
@@ -227,9 +218,6 @@ ACSIncome__MS:
   Fairness Reward Weight Optimization:
     values:
       WEIGHT_ADJUST_LIST: [[opt_debias, optuna, TPE, 200]]
-      FRWO_CLF_N_ESTIMATORS: 400
-      FRWO_CLF_MAX_DEPTH: null
-      FRWO_CLF_MIN_SAMPLES_LEAF: 2
       OPT_DEBIAS_LAMDA: 0.0002512221280489647
     objective: null
     sweep: null

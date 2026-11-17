@@ -675,15 +675,12 @@ class SuperhumanFairnessNN:
     # Prediction
     ##
 
-    def predict(self, X, y=None):
+    def predict(self, X):
         """
         Predict labels for `X`.
 
         `Super_human.eval_model()`: the probability of predicting 1,
         thresholded at the mean of the training labels.
-
-        `y` is accepted and ignored, so that this classifier is callable
-        exactly like a `ClassificationMDPPolicy` from the evaluation pipeline.
         """
         return self._predict_design(self._design(X))
 

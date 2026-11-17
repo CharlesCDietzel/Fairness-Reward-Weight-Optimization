@@ -216,13 +216,8 @@ class PostProcessingBaseline:
         )
         return self
 
-    def predict(self, X, y=None):
-        """
-        Predict labels for `X`.
-
-        `y` is accepted and ignored, so that this classifier is callable
-        exactly like a `ClassificationMDPPolicy` from the evaluation pipeline.
-        """
+    def predict(self, X):
+        """Predict labels for `X`."""
         preds = self.model_.predict(
             X,
             sensitive_features=X["z"],
@@ -353,13 +348,8 @@ class FairLogLossBaseline:
         )
         return self
 
-    def predict(self, X, y=None):
-        """
-        Predict labels for `X`.
-
-        `y` is accepted and ignored, so that this classifier is callable
-        exactly like a `ClassificationMDPPolicy` from the evaluation pipeline.
-        """
+    def predict(self, X):
+        """Predict labels for `X`."""
         preds = self.model_.predict(self._design(X), np.asarray(X["z"]).astype(float))
         preds = np.asarray(preds, dtype=float)
         # As the original does, right after predicting.

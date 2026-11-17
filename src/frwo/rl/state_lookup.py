@@ -3,19 +3,17 @@ How the rows of a classification dataset are mapped to the states of a fitted
 `ClassificationMDP`, and which action a policy of that MDP takes for a row
 whose state the MDP was never fit to: an "unseen" state.
 
-A row is looked up by its "unit": its `x_cols` and `z` values, plus its `y`
-unless the MDP was fit with `restrict_y`. With `restrict_y` every state with
-the same `x_cols` and `z` takes the same action whatever its `y`, so the row's
-`y` (predicted, when it can't be observed) is not needed to find its action,
-and including it would only make rows miss a state whose action is known.
+A row is looked up by its "unit": its `x_cols` and `z` values. Every state
+with the same `x_cols` and `z` takes the same action whatever its `y` (see
+`ClassificationMDP`), so a row's `y` is not needed to find its action.
 
 A row whose unit the MDP has no state of takes the action of its "unseen
-state fallback" (see `UNSEEN_STATE_FALLBACKS`). Both fallbacks predict 1 when
-more than half of the training rows of the seen states they draw on are in
-states the policy predicts 1 for (i.e. a vote of the policy's own actions,
-each state weighted by its training count), and widen what they draw on when
-the vote is exactly tied. A row they can't decide takes the policy's default
-action.
+state fallback" (see `UNSEEN_STATE_FALLBACKS`). The "nearest" fallback
+predicts 1 when more than half of the training rows of the seen units it
+draws on are in units the policy predicts 1 for (i.e. a vote of the policy's
+own actions, each unit weighted by its training count), and widens what it
+draws on when the vote is exactly tied. A row it can't decide takes the
+policy's default action.
 
 Everything about a lookup that doesn't depend on the policy is computed once,
 in `StateIndex.lookup()`, so that the actions of any number of policies of the
@@ -31,17 +29,10 @@ from scipy.sparse import csr_array
 # value:
 #   "none"     The policy's default action.
 #   "nearest"  The vote of the seen units nearest to the row: those with the
-#              same z (and y, without `restrict_y`) that differ from it in the
-#              fewest `x_cols`. On a tie, the units one more column away join
-#              the vote, up to `NEAREST_TIE_RINGS` times.
-#   "backoff"  The vote of the seen states that match the row once its least
-#              important `x_cols` are ignored: the columns are dropped one at
-#              a time, least important first, until the row's remaining
-#              values (always including z, and y without `restrict_y`) match
-#              a seen state. A column's importance is its conditional mutual
-#              information with y given z, in the MDP's training data. On a
-#              tie, the next column is dropped too.
-UNSEEN_STATE_FALLBACKS = ("none", "nearest", "backoff")
+#              same z that differ from it in the fewest `x_cols`. On a tie,
+#              the units one more column away join the vote, up to
+#              `NEAREST_TIE_RINGS` times.
+UNSEEN_STATE_FALLBACKS = ("none", "nearest")
 
 # How many more rings of units (each one column further from the row than the
 # last) the "nearest" fallback adds to a tied vote before giving up on it.
@@ -70,19 +61,16 @@ class StateIndex:
     ----------
     x_cols : list<str>
         The MDP's `x_cols`.
-    restrict_y : bool
-        Whether the MDP was fit with `restrict_y`.
     state_df : pandas.DataFrame
-        The MDP's `reduced_state_df_`: one row per state, with its `x_cols`,
-        `z` and `y` values.
+        The MDP's `reduced_state_df_`: one row per state, with its `x_cols`
+        and `z` values.
     state_counts : numpy.array<int>, len(n_states)
         The number of training rows of each state.
 
     Attributes
     ----------
     key_cols : list<str>
-        The columns a row is looked up by: `x_cols`, `z`, and `y` unless
-        `restrict_y`.
+        The columns a row is looked up by: `x_cols` and `z`.
     unit_of_state : numpy.array<int>, len(n_states)
         The unit of each state.
     unit_states : numpy.array<int>, len(n_units)
@@ -95,11 +83,9 @@ class StateIndex:
         values (see `encode()`).
     """
 
-    def __init__(self, x_cols, restrict_y, state_df, state_counts):
+    def __init__(self, x_cols, state_df, state_counts):
         self.x_cols = list(x_cols)
-        self.restrict_y = restrict_y
-        self.match_cols = ["z"] if restrict_y else ["z", "y"]
-        self.key_cols = self.x_cols + self.match_cols
+        self.key_cols = self.x_cols + ["z"]
 
         # Keys are built column-wise, like the MDP's own state keys, so that
         # they hash and compare equal to the keys of the rows looked up.
@@ -137,12 +123,6 @@ class StateIndex:
             axis=1,
         ).reshape(self.n_units, len(self.key_cols))
 
-        # Kept for the "backoff" fallback's column order, computed on first
-        # use.
-        self._state_y = np.asarray(state_df["y"].tolist(), dtype=np.int64)
-        self._state_counts = np.asarray(state_counts, dtype=np.int64)
-        self._backoff_order = None
-
     def _encode_column(self, j, values):
         codes = self._value_codes[j]
         return np.fromiter(
@@ -172,8 +152,7 @@ class StateIndex:
         Parameters
         ----------
         df : pandas.DataFrame
-            The rows, with every column of `key_cols`, their values already
-            transformed by the MDP's `state_reducer_`.
+            The rows, with every column of `key_cols`.
         fallback : str
             The unseen state fallback (see `UNSEEN_STATE_FALLBACKS`).
 
@@ -192,50 +171,9 @@ class StateIndex:
         unseen = np.flatnonzero(units < 0)
 
         prepared = None
-        if len(unseen) and fallback != "none":
-            codes = self.encode(df.iloc[unseen])
-            if fallback == "nearest":
-                prepared = _NearestFallback(self, codes)
-            else:
-                prepared = _BackoffFallback(self, codes)
+        if len(unseen) and fallback == "nearest":
+            prepared = _NearestFallback(self, self.encode(df.iloc[unseen]))
         return StateLookup(states=states, index=self, prepared_fallback=prepared)
-
-    def backoff_order(self):
-        """
-        The order the "backoff" fallback drops the `x_cols` in: by their
-        conditional mutual information with y given z in the MDP's training
-        data, least first (on a tie, in `x_cols` order).
-
-        Returns
-        -------
-        order : numpy.array<int>
-            Indices into `x_cols`.
-        """
-        if self._backoff_order is None:
-            n_x = len(self.x_cols)
-            state_codes = self.unit_codes[self.unit_of_state]
-            z = state_codes[:, n_x]
-            n_z = int(z.max()) + 1 if len(z) else 1
-            n_y = int(self._state_y.max()) + 1 if len(z) else 1
-            total = self._state_counts.sum()
-            mi = np.zeros(n_x)
-            for j in range(n_x):
-                x = state_codes[:, j]
-                joint = np.zeros((len(self._value_codes[j]), n_y, n_z))
-                np.add.at(joint, (x, self._state_y, z), self._state_counts)
-                p = joint / total
-                p_xz = p.sum(axis=1, keepdims=True)
-                p_yz = p.sum(axis=0, keepdims=True)
-                p_z = p.sum(axis=(0, 1), keepdims=True)
-                # I(x; y | z) = sum p(x,y,z) log(p(z) p(x,y,z) / (p(x,z) p(y,z)))
-                nz = p > 0
-                numer = (p * p_z)[nz]
-                denom = np.broadcast_to(p_xz * p_yz, p.shape)[nz]
-                mi[j] = float(np.sum(p[nz] * np.log(numer / denom)))
-            # Rounded so that columns with the same information (e.g.
-            # duplicates) tie exactly and keep their column order.
-            self._backoff_order = np.argsort(np.round(mi, 12), kind="stable")
-        return self._backoff_order
 
 
 @dataclass
@@ -251,9 +189,9 @@ class StateLookup:
         unseen state.
     index : StateIndex
         The index the rows were looked up in.
-    prepared_fallback : _NearestFallback, _BackoffFallback or None
-        The unseen state fallback, prepared for the unseen rows. None for the
-        "none" fallback, or when no row is unseen.
+    prepared_fallback : _NearestFallback or None
+        The "nearest" unseen state fallback, prepared for the unseen rows.
+        None for the "none" fallback, or when no row is unseen.
     """
 
     states: np.ndarray
@@ -294,15 +232,14 @@ class StateLookup:
         return actions
 
 
-def _vote(candidates, out, unresolved, s, t):
+def _vote(out, unresolved, s, t):
     """
-    Decides the unresolved rows among `candidates` whose vote isn't tied,
-    setting their `out` to 1 where the units predicting 1 have more than half
-    of the vote's training rows, and 0 otherwise. `s` is the number of
-    training rows predicting 1 and `t` the number of all training rows in
-    each row's vote.
+    Decides the unresolved rows whose vote isn't tied, setting their `out` to
+    1 where the units predicting 1 have more than half of the vote's training
+    rows, and 0 otherwise. `s` is the number of training rows predicting 1 and
+    `t` the number of all training rows in each row's vote.
     """
-    rows = candidates & unresolved & (t > 0) & (2 * s != t)
+    rows = unresolved & (t > 0) & (2 * s != t)
     out[rows] = 2 * s[rows] > t[rows]
     unresolved &= ~rows
 
@@ -327,8 +264,8 @@ class _NearestFallback:
         ring_rows = [[] for _ in range(n_rings)]
         ring_units = [[] for _ in range(n_rings)]
 
-        # Only the units that match a row's z (and y) can be its neighbors, so
-        # each of their combinations is compared separately.
+        # Only the units with a row's z can be its neighbors, so each z is
+        # compared separately.
         match_units = {}
         for unit, key in enumerate(map(tuple, unit_codes[:, n_x:])):
             match_units.setdefault(key, []).append(unit)
@@ -379,61 +316,7 @@ class _NearestFallback:
             # Each ring adds to the vote of the rings before it.
             s += ring @ votes_1
             t += ring @ self.unit_counts
-            _vote(unresolved.copy(), out, unresolved, s, t)
-            if not unresolved.any():
-                break
-        return out
-
-
-class _BackoffFallback:
-    """
-    The "backoff" unseen state fallback, prepared for some unseen rows: at
-    each level (with one more of the `x_cols` dropped, see
-    `StateIndex.backoff_order()`), the cell of each unit, and the cell of each
-    row (-1 if no unit is in it).
-
-    Parameters
-    ----------
-    index : StateIndex
-    codes : numpy.array<int>, shape (n_rows, len(index.key_cols))
-        The unseen rows, encoded by `index.encode()`.
-    """
-
-    def __init__(self, index, codes):
-        n_x = len(index.x_cols)
-        order = index.backoff_order()
-        match = list(range(n_x, len(index.key_cols)))
-        n_units = index.n_units
-        self.levels = []
-        for level in range(1, n_x + 1):
-            kept = list(order[level:]) + match
-            stacked = np.vstack([index.unit_codes[:, kept], codes[:, kept]])
-            _, cells = np.unique(stacked, axis=0, return_inverse=True)
-            cells = cells.reshape(-1)
-            unit_cells = cells[:n_units]
-            row_cells = cells[n_units:]
-            # A row is in a seen cell only if a unit is in it too (which a row
-            # with a value no unit has, coded -1, never is).
-            seen = np.zeros(int(cells.max()) + 1, dtype=bool)
-            seen[unit_cells] = True
-            row_cells = np.where(seen[row_cells], row_cells, -1)
-            self.levels.append((unit_cells, row_cells, len(seen)))
-        self.unit_counts = index.unit_counts.astype(float)
-        self.n_rows = len(codes)
-
-    def actions(self, unit_actions, default_action):
-        """The action of each unseen row, for the action of each unit."""
-        votes_1 = self.unit_counts * unit_actions
-        out = np.full(self.n_rows, float(default_action))
-        unresolved = np.ones(self.n_rows, dtype=bool)
-        for unit_cells, row_cells, n_cells in self.levels:
-            in_cell = row_cells >= 0
-            cells = np.maximum(row_cells, 0)
-            s = np.bincount(unit_cells, weights=votes_1, minlength=n_cells)[cells]
-            t = np.bincount(unit_cells, weights=self.unit_counts, minlength=n_cells)[
-                cells
-            ]
-            _vote(in_cell, out, unresolved, s, t)
+            _vote(out, unresolved, s, t)
             if not unresolved.any():
                 break
         return out

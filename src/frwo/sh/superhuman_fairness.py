@@ -886,15 +886,12 @@ class SuperhumanFairness:
     # Prediction
     ##
 
-    def predict(self, X, y=None):
+    def predict(self, X):
         """
         Predict labels for `X`.
 
         `Super_human.eval_model()`: the positive-class score thresholded at the
         mean of the training labels.
-
-        `y` is accepted and ignored, so that this classifier is callable
-        exactly like a `ClassificationMDPPolicy` from the evaluation pipeline.
         """
         scores = self.pipeline_.predict_proba(X)[:, 1]
         return (scores >= self.threshold_) * 1

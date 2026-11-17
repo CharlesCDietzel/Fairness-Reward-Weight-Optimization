@@ -42,7 +42,6 @@ from fairlearn.reductions import (
 from line_profiler import LineProfiler
 from scipy.spatial.distance import cosine
 from sklearn.dummy import DummyClassifier
-from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score, precision_score
 from sklearn.preprocessing import normalize
@@ -3041,20 +3040,11 @@ def _compute_errors_and_metrics(
 # Defaults for Fairness Reward Weight Optimization's own settings, overridable
 # through the correspondingly named `exp_info` keys.
 #
-# The FRWO_CLF_* settings configure the random forest that predicts `y` from
-# `x` for the policies Fairness Reward Weight Optimization learns. Since those
-# policies cannot observe `y`, it decides which MDP state each row is in. The
-# defaults are scikit-learn's. The expert has its own, separately fit random
-# forest (see `OptClfMDPPolicyExpert`), which these leave untouched.
-#
 # OPT_DEBIAS_LAMDA is the regularization of the `alpha` scaling of the
 # subdominance the `opt_debias` weight search minimizes -- the counterpart of
 # the Superhuman Fairness baselines' SH_*LAMDA. It does not change the
 # subdominance reported as a result, which always uses `SH_DEFAULT_LAMDA`.
 FRWO_DEFAULTS = {
-    "FRWO_CLF_N_ESTIMATORS": 100,
-    "FRWO_CLF_MAX_DEPTH": None,
-    "FRWO_CLF_MIN_SAMPLES_LEAF": 1,
     "OPT_DEBIAS_LAMDA": SH_DEFAULT_LAMDA,
 }
 
@@ -3112,28 +3102,11 @@ def apply_manual_weight_adjust(wi, manual_weight_adjust, objective_names):
     return normalize(adjusted.reshape(1, -1), norm="l1").flatten()
 
 
-def _fit_clf_and_demo_df(exp_info, feature_types, X_train, y_train):
-    """Fit a y|x predictor and build the demo DataFrame used by compute_optimal_policy."""
-    clf = sklearn_clf_pipeline(
-        feature_types=feature_types,
-        clf_inst=RandomForestClassifier(
-            n_estimators=_frwo_setting(exp_info, "FRWO_CLF_N_ESTIMATORS"),
-            max_depth=_frwo_setting(exp_info, "FRWO_CLF_MAX_DEPTH"),
-            min_samples_leaf=_frwo_setting(exp_info, "FRWO_CLF_MIN_SAMPLES_LEAF"),
-        ),
-    )
-    clf.fit(X_train, y_train)
-    demo_df = pd.DataFrame(X_train)
-    demo_df["y"] = y_train
-    return clf, demo_df
-
-
 def _apply_weight_adjustments(
     wi,
     weight_adjust,
     feat_obj_set,
     demo_df,
-    clf,
     x_cols,
     exp_info,
     X,
@@ -3160,7 +3133,6 @@ def _apply_weight_adjustments(
             normalize(np.asarray(wi, dtype=float).reshape(1, -1), norm="l1").flatten(),
             feat_obj_set,
             demo_df,
-            clf,
             x_cols,
             exp_info,
             X,
@@ -3249,7 +3221,6 @@ def optimize_weights(
     wi,
     feat_obj_set,
     demo_df,
-    clf,
     x_cols,
     exp_info,
     X,
@@ -3282,12 +3253,11 @@ def optimize_weights(
     # Everything subdominance_of_weights() computes that doesn't depend on the
     # weights, computed once rather than on every one of its n_steps calls.
     prepared = prepare_subdominance_of_weights(
-        feat_obj_set, demo_df, clf, x_cols, exp_info, X, can_observe_y
+        feat_obj_set, demo_df, x_cols, exp_info, X, can_observe_y
     )
     objective_kwargs = dict(
         feat_obj_set=feat_obj_set,
         demo_df=demo_df,
-        clf=clf,
         x_cols=x_cols,
         exp_info=exp_info,
         X=X,
@@ -3477,7 +3447,6 @@ def optuna_objective(
     trial,
     feat_obj_set,
     demo_df,
-    clf,
     x_cols,
     exp_info,
     X,
@@ -3497,7 +3466,6 @@ def optuna_objective(
         unnormalized_weights,
         feat_obj_set,
         demo_df,
-        clf,
         x_cols,
         exp_info,
         X,
@@ -3514,7 +3482,6 @@ def pybobyqa_objective(
     unnormalized_weights,
     feat_obj_set,
     demo_df,
-    clf,
     x_cols,
     exp_info,
     X,
@@ -3531,7 +3498,6 @@ def pybobyqa_objective(
         unnormalized_weights,
         feat_obj_set,
         demo_df,
-        clf,
         x_cols,
         exp_info,
         X,
@@ -3567,7 +3533,7 @@ class PreparedSubdominanceOfWeights:
 
 
 def prepare_subdominance_of_weights(
-    feat_obj_set, demo_df, clf, x_cols, exp_info, X, can_observe_y
+    feat_obj_set, demo_df, x_cols, exp_info, X, can_observe_y
 ):
     """Computes everything `subdominance_of_weights()` needs that doesn't depend
     on the weights, so that it can be computed once for any number of calls
@@ -3578,22 +3544,14 @@ def prepare_subdominance_of_weights(
     -------
     prepared : PreparedSubdominanceOfWeights
     """
-    state_mdp = fit_state_mdp(
-        clf_df=demo_df,
-        x_cols=x_cols,
-        obj_set=feat_obj_set,
-        min_freq_fill_pct=exp_info["MIN_FREQ_FILL_PCT"],
-        restrict_y=exp_info["RESTRICT_Y_ACTION"],
-    )
+    state_mdp = fit_state_mdp(clf_df=demo_df, x_cols=x_cols, obj_set=feat_obj_set)
     demo_states = None
     if not can_observe_y:
-        # The state of each row depends only on the MDP (and, without
-        # RESTRICT_Y_ACTION, on `clf`'s predictions of `y`), not on which
-        # policy acts in it.
+        # The state of each row depends only on the MDP, not on which policy
+        # acts in it.
         demo_states = ClassificationMDPPolicy(
             mdp=state_mdp,
             pi=None,
-            clf=clf,
             unseen_state_fallback=exp_info["UNSEEN_STATE_FALLBACK"],
         ).lookup_states(X)
     return PreparedSubdominanceOfWeights(state_mdp=state_mdp, demo_states=demo_states)
@@ -3603,7 +3561,6 @@ def subdominance_of_weights(
     unnormalized_weights,
     feat_obj_set,
     demo_df,
-    clf,
     x_cols,
     exp_info,
     X,
@@ -3628,7 +3585,7 @@ def subdominance_of_weights(
     """
     if prepared is None:
         prepared = prepare_subdominance_of_weights(
-            feat_obj_set, demo_df, clf, x_cols, exp_info, X, can_observe_y
+            feat_obj_set, demo_df, x_cols, exp_info, X, can_observe_y
         )
     # Start by L1 normalizing the weights to ensure they sum to 1
     weights = normalize(unnormalized_weights.reshape(1, -1), norm="l1").flatten()
@@ -3638,7 +3595,6 @@ def subdominance_of_weights(
     }
     clf_pol = compute_optimal_policy_of_state_mdp(
         state_mdp=prepared.state_mdp,
-        clf=clf,
         reward_weights=reward_weights,
         skip_error_terms=True,
         method=exp_info["METHOD"],
@@ -4626,7 +4582,6 @@ def run_experiment_trial(
                     unbiased_demos,
                     feat_obj_set,
                     perf_obj_set,
-                    feature_types,
                     x_cols,
                     weight_adjust_list,
                     unadjusted_weight,
@@ -4682,7 +4637,6 @@ def _run_frwo_trials(
     unbiased_demos,
     feat_obj_set,
     perf_obj_set,
-    feature_types,
     x_cols,
     weight_adjust_list,
     unadjusted_weight,
@@ -4715,14 +4669,11 @@ def _run_frwo_trials(
     feat_obj_set_cols = [obj.name for obj in feat_obj_set.objectives]
     perf_obj_set_cols = [obj.name for obj in perf_obj_set.objectives]
 
-    # The `y|x` predictor -- and the MDP built from it -- of every policy
-    # this bias type learns. It is fit on this bias type's own biased
-    # labels, so the MDP its policies are computed in is the world its
-    # expert demonstrated in.
-    logging.debug("Fitting `y|x` predictor for clf policy...")
-    clf, demo_df = _fit_clf_and_demo_df(
-        exp_info, feature_types, bias_demos.X_train, bias_demos.y_train
-    )
+    # The data the MDP of every policy this bias type learns is fit to: this
+    # bias type's own biased labels, so that the MDP its policies are
+    # computed in is the world its expert demonstrated in.
+    demo_df = pd.DataFrame(bias_demos.X_train)
+    demo_df["y"] = bias_demos.y_train
 
     def run_policy(weight_adjust, training_adjust=NO_TRAINING_ADJUST, base=None):
         """
@@ -4771,7 +4722,6 @@ def _run_frwo_trials(
                     weight_adjust,
                     feat_obj_set,
                     demo_df,
-                    clf,
                     x_cols,
                     opt_debias_exp_info,
                     bias_demos.X_train,  # could switch to bias_demos.X_val
@@ -4791,14 +4741,11 @@ def _run_frwo_trials(
             }
             clf_pol = compute_optimal_policy(
                 clf_df=demo_df,
-                clf=clf,
                 x_cols=x_cols,
                 obj_set=feat_obj_set,
                 reward_weights=reward_weights,
                 skip_error_terms=True,
                 method=exp_info["METHOD"],
-                min_freq_fill_pct=exp_info["MIN_FREQ_FILL_PCT"],
-                restrict_y=exp_info["RESTRICT_Y_ACTION"],
                 true_reward_rounding=exp_info["TRUE_REWARD_ROUNDING"],
                 unseen_state_fallback=exp_info["UNSEEN_STATE_FALLBACK"],
             )
