@@ -51,6 +51,7 @@ from frwo.irl.frwo import *
 from frwo.rl.clf_mdp import *
 from frwo.rl.clf_mdp_policy import *
 from frwo.rl.objectives import *
+from frwo.rl.state_lookup import StateLookup
 from frwo.utils import *
 
 from .datasets import *
@@ -3554,13 +3555,15 @@ class PreparedSubdominanceOfWeights:
     state_mdp : ClassificationMDP
         The MDP every weight set's optimal policy is computed in, fit to
         everything but the reward weights (see `fit_state_mdp()`).
-    demo_states : numpy.ndarray or None
+    demo_states : frwo.rl.state_lookup.StateLookup or None
         The MDP state of each row of `X` the policies' demos are generated on,
-        or None if the policies can observe `y` (and so don't look them up).
+        with the unseen state fallback prepared for the rows whose state the
+        MDP doesn't have, or None if the policies can observe `y` (and so
+        don't look them up).
     """
 
     state_mdp: ClassificationMDP
-    demo_states: np.ndarray | None
+    demo_states: StateLookup | None
 
 
 def prepare_subdominance_of_weights(
@@ -3584,10 +3587,14 @@ def prepare_subdominance_of_weights(
     )
     demo_states = None
     if not can_observe_y:
-        # The state of each row depends only on the MDP and on `clf`'s
-        # predictions of `y`, not on which policy acts in it.
+        # The state of each row depends only on the MDP (and, without
+        # RESTRICT_Y_ACTION, on `clf`'s predictions of `y`), not on which
+        # policy acts in it.
         demo_states = ClassificationMDPPolicy(
-            mdp=state_mdp, pi=None, clf=clf
+            mdp=state_mdp,
+            pi=None,
+            clf=clf,
+            unseen_state_fallback=exp_info["UNSEEN_STATE_FALLBACK"],
         ).lookup_states(X)
     return PreparedSubdominanceOfWeights(state_mdp=state_mdp, demo_states=demo_states)
 
@@ -3636,6 +3643,7 @@ def subdominance_of_weights(
         skip_error_terms=True,
         method=exp_info["METHOD"],
         true_reward_rounding=exp_info["TRUE_REWARD_ROUNDING"],
+        unseen_state_fallback=exp_info["UNSEEN_STATE_FALLBACK"],
     )
     # Generate demos from the optimal policy
     yhat = None
@@ -4792,6 +4800,7 @@ def _run_frwo_trials(
                 min_freq_fill_pct=exp_info["MIN_FREQ_FILL_PCT"],
                 restrict_y=exp_info["RESTRICT_Y_ACTION"],
                 true_reward_rounding=exp_info["TRUE_REWARD_ROUNDING"],
+                unseen_state_fallback=exp_info["UNSEEN_STATE_FALLBACK"],
             )
 
             ##

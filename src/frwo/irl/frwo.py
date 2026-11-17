@@ -31,6 +31,7 @@ def compute_optimal_policy(
     min_freq_fill_pct=0,
     restrict_y=True,
     true_reward_rounding=False,
+    unseen_state_fallback="none",
 ):
     """
     Learns the optimal policies from the provided reward weights.
@@ -78,6 +79,9 @@ def compute_optimal_policy(
         the best true reward among its roundings, rather than to the usual
         rounding if it is feasible (see
         `frwo.rl.clf_mdp.ClassificationMDP.compute_optimal_policies()`).
+    unseen_state_fallback : str, default "none"
+        How the policy chooses the action of a row whose state isn't one of
+        the MDP's (see `frwo.rl.state_lookup.UNSEEN_STATE_FALLBACKS`).
 
     Returns
     -------
@@ -100,7 +104,12 @@ def compute_optimal_policy(
     )
 
     return _select_optimal_policy(
-        clf_mdp, clf, skip_error_terms, method, true_reward_rounding
+        clf_mdp,
+        clf,
+        skip_error_terms,
+        method,
+        true_reward_rounding,
+        unseen_state_fallback,
     )
 
 
@@ -148,6 +157,7 @@ def compute_optimal_policy_of_state_mdp(
     skip_error_terms=True,
     method="highs",
     true_reward_rounding=False,
+    unseen_state_fallback="none",
 ):
     """
     Equivalent to `compute_optimal_policy()` with the parameters `state_mdp`
@@ -157,7 +167,8 @@ def compute_optimal_policy_of_state_mdp(
     ----------
     state_mdp : frwo.rl.clf_mdp.ClassificationMDP
         The MDP returned by `fit_state_mdp()`. It is not modified.
-    clf, reward_weights, skip_error_terms, method, true_reward_rounding
+    clf, reward_weights, skip_error_terms, method, true_reward_rounding,
+    unseen_state_fallback
         See `compute_optimal_policy()`.
 
     Returns
@@ -168,12 +179,22 @@ def compute_optimal_policy_of_state_mdp(
     """
     clf_mdp = state_mdp.with_reward_weights(reward_weights)
     return _select_optimal_policy(
-        clf_mdp, clf, skip_error_terms, method, true_reward_rounding
+        clf_mdp,
+        clf,
+        skip_error_terms,
+        method,
+        true_reward_rounding,
+        unseen_state_fallback,
     )
 
 
 def _select_optimal_policy(
-    clf_mdp, clf, skip_error_terms, method, true_reward_rounding
+    clf_mdp,
+    clf,
+    skip_error_terms,
+    method,
+    true_reward_rounding,
+    unseen_state_fallback,
 ):
     """
     Solves the fitted `clf_mdp` and returns its optimal policy: the first one,
@@ -205,6 +226,7 @@ def _select_optimal_policy(
         mdp=clf_mdp,
         pi=optimal_policies[0],
         clf=clf,
+        unseen_state_fallback=unseen_state_fallback,
     )
 
     return clf_pol
@@ -285,6 +307,7 @@ class OptClfMDPPolicyExpert:
             min_freq_fill_pct=exp_info["MIN_FREQ_FILL_PCT"],
             restrict_y=exp_info["RESTRICT_Y_ACTION"],
             true_reward_rounding=exp_info["TRUE_REWARD_ROUNDING"],
+            unseen_state_fallback=exp_info["UNSEEN_STATE_FALLBACK"],
         )
 
 

@@ -9,6 +9,8 @@ import numpy as np
 import pandas as pd
 from scipy.sparse import csc_array, csr_array
 
+from frwo.rl.state_lookup import StateIndex
+
 # from line_profiler import LineProfiler
 
 
@@ -49,6 +51,11 @@ class ClassificationMDP:
         Index is state index, columns are features and mu0.
     reduced_state_lookup_ : dict<tuple, int>
         Maps classification features to its MDP state index.
+    restrict_y_ : bool
+        Whether the MDP was fit with `restrict_y`.
+    state_index_ : frwo.rl.state_lookup.StateIndex
+        How rows are looked up among the states (by their x_cols and z alone
+        if `restrict_y_`), and the fallbacks for rows in unseen states.
     ldf_ : pandas.DataFrame
         "Lambda dataframe". One row for each state and action combination.
         Columns are **x_cols, z, y, yhat.
@@ -79,6 +86,8 @@ class ClassificationMDP:
         self.state_reducer_ = {}
         self.reduced_state_df_ = None
         self.reduced_state_lookup_ = None
+        self.restrict_y_ = None
+        self.state_index_ = None
         self.n_states = None
         self.A_eq_ = None
         self.reduced_lp_ = None
@@ -116,6 +125,8 @@ class ClassificationMDP:
         state_reducer_
         reduced_state_lookup_
         reduced_state_df_
+        restrict_y_
+        state_index_
         n_states_
         ldf_
         opt_problems_
@@ -147,6 +158,8 @@ class ClassificationMDP:
         state_reducer_
         reduced_state_lookup_
         reduced_state_df_
+        restrict_y_
+        state_index_
         n_states_
         ldf_
 
@@ -297,6 +310,14 @@ class ClassificationMDP:
             state_groups=state_groups,
         )
         self.reduced_lp_.check_constraints(self.A_eq_, self.b_eq_)
+
+        self.restrict_y_ = restrict_y
+        self.state_index_ = StateIndex(
+            x_cols=self.x_cols,
+            restrict_y=restrict_y,
+            state_df=self.reduced_state_df_,
+            state_counts=state_counts,
+        )
 
         return None
 

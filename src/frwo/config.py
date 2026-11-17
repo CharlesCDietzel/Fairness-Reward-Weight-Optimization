@@ -767,12 +767,16 @@ def build_experiment_plan(config, overrides=None, annotations=None):
             f" not a dataset of {BASE_CONFIG_PATH}. Available: {sorted(datasets)}."
         )
 
-    # Check every expert's reward weights against every selected experiment
-    # now, rather than when its run is reached.
+    # Check every expert's reward weights, and the unseen state fallback,
+    # against every selected experiment now, rather than when its run is
+    # reached.
+    from frwo.rl.state_lookup import check_unseen_state_fallback
+
     try:
         experts = parse_expert_algos(top_level["EXPERT_ALGOS"])
         for exp_info in experiments:
             if exp_info["DATASET"] in top_level["SELECTED_DATASETS"]:
+                check_unseen_state_fallback(exp_info["UNSEEN_STATE_FALLBACK"])
                 for expert in experts:
                     expert_settings(expert, exp_info)
     except ValueError as e:
